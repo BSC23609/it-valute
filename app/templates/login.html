@@ -2,8 +2,9 @@
 {% block title %}Sign in · IT Assets & Vault{% endblock %}
 {% block body %}
 <div class="login card">
+  <img class="login-logo" src="/static/brand/group.png" alt="The Bharat Steel Group">
   <h1>IT Assets &amp; Vault</h1>
-  <p class="sub">Bharat Steel Group · sign in to continue</p>
+  <p class="sub">Sign in with your work email.</p>
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next }}">
     <label class="f">Email</label>

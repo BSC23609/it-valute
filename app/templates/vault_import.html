@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <a class="crumb" href="/vault">Password vault</a>
+    <h1>Import from Excel</h1>
+    <p class="sub">Each sheet in your workbook becomes a group in the vault — for example “SAP credentials” or “Wi-Fi credentials”. Passwords are encrypted as they are saved.</p>
+  </div>
+</header>
+
+{% if error %}<div class="alert err" role="alert">{{ error }}</div>{% endif %}
+
+{% if result %}
+<div class="card">
+  <h2>Imported {{ total }} password{{ '' if total == 1 else 's' }} from {{ fname }}</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Sheet → group</th><th>Added</th><th>Already in vault (skipped)</th><th></th></tr></thead>
+    <tbody>
+    {% for r in result %}
+      <tr><td><b>{{ r.name }}</b>{% if r.problem %}<div class="muted small">Not imported: {{ r.problem }}</div>{% endif %}</td>
+        <td>{{ r.added }}</td><td>{{ r.skipped }}</td>
+        <td>{% if r.added or r.skipped %}<a class="btn sm ghost" href="/vault?g={{ r.name|urlencode }}">Open</a>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted small" style="margin:14px 0 0">Importing the same file again won’t create duplicates — rows with the same group, name and username are skipped. After checking the vault, delete or lock away the Excel file: it holds the passwords in plain text.</p>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="sheet">
+  <section class="group">
+    <div class="group-head"><h2>Workbook</h2><p>.xlsx or .csv. Hidden sheets are left out.</p></div>
+    <div class="fields">
+      <div class="fld wide"><label for="file">Excel file</label>
+        <input id="file" type="file" name="file" accept=".xlsx,.xlsm,.csv" required></div>
+      <div class="fld"><label for="company">Company for all entries</label>
+        <select id="company" name="company"><option value="">Group / shared</option>
+          {% for k, b in BRANDS.items() %}<option value="{{ k }}">{{ b.name }}</option>{% endfor %}</select></div>
+    </div>
+  </section>
+  <section class="group">
+    <div class="group-head"><h2>How columns are read</h2><p>The first row with column titles is used as the header.</p></div>
+    <div class="fields">
+      <div class="fld wide">
+        <dl class="kv">
+          <dt>Password</dt><dd>Password, Pwd, Pass, PIN, Key, Licence key</dd>
+          <dt>Username</dt><dd>Username, User ID, Login, Mail ID, Email</dd>
+          <dt>URL / IP</dt><dd>URL, Link, Website, Portal, IP address, Host, Server</dd>
+          <dt>Name</dt><dd>Name, Description, System, Software, SSID, Device, Account</dd>
+          <dt>Everything else</dt><dd>Kept in the entry’s notes, e.g. “Location: Ponneri”</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+  <div class="savebar">
+    <a class="btn ghost" href="/vault">Cancel</a>
+    <button class="btn">Import</button>
+  </div>
+</form>
+{% endblock %}

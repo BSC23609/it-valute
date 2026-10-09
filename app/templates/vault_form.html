@@ -1,40 +1,62 @@
 {% extends "base.html" %}
 {% from "_macros.html" import dmy, when %}
 {% block body %}
-<div class="head">
-  <div><h1>{{ 'Edit: ' ~ v.title if v.id else 'New password' }}</h1>
-  <p class="sub" style="margin:0">{% if v.id %}Last changed {{ dmy(v.rotated_on) or 'never' }} · leave the password blank to keep the current one{% else %}Software logins, system/admin passwords, licence keys, Wi-Fi keys…{% endif %}</p></div>
-</div>
-{% if errors %}<div class="alert err">{{ errors|join(' · ') }}</div>{% endif %}
-<form method="post" class="card" autocomplete="off">
-  <div class="form">
-    <div><label class="f">Name *</label><input name="title" value="{{ v.title or '' }}" required placeholder="e.g. SAP B1 — manager login"></div>
-    <div><label class="f">Type *</label><select name="kind" required><option value="">Select type</option>
-      {% for k in VAULT_KINDS %}<option {{ 'selected' if v.kind == k }}>{{ k }}</option>{% endfor %}</select></div>
-    <div><label class="f">Company</label><select name="company"><option value="">Group / shared</option>
-      {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if v.company == k }}>{{ b.short }}</option>{% endfor %}</select></div>
-    <div><label class="f">URL / IP / host</label><input name="url_host" value="{{ v.url_host or '' }}" placeholder="https://… or 192.168.1.1"></div>
-    <div><label class="f">Username</label><input name="username" value="{{ v.username or '' }}" autocomplete="off"></div>
-    <div><label class="f">Password / key {{ '' if v.id else '' }}</label>
-      <div style="display:flex;gap:6px"><input name="secret" id="secret" type="password" autocomplete="new-password" placeholder="{{ 'unchanged' if v.id else '' }}">
-        <button type="button" class="btn sm ghost" id="toggle">Show</button>
-        <button type="button" class="btn sm ghost" id="gen" title="Generate a strong 16-character password">Generate</button></div></div>
-    <div><label class="f">Linked asset</label><select name="asset_id"><option value="">None</option>
-      {% for a in assets %}<option value="{{ a.id }}" {{ 'selected' if v.asset_id == a.id }}>{{ a.asset_code }} — {{ a.category }} {{ a.make or '' }} {{ a.model or '' }}</option>{% endfor %}</select></div>
-    <div class="full"><label class="f">Notes (encrypted — recovery codes, licence details, support contacts)</label>
-      <textarea name="notes" rows="4">{{ v.notes or '' }}</textarea></div>
+<header class="page-head">
+  <div>
+    <a class="crumb" href="/vault{{ '?g=' ~ v.kind|urlencode if v.kind }}">{{ v.kind or 'Password vault' }}</a>
+    <h1>{{ 'Edit ' ~ v.title if v.id else 'New password' }}</h1>
+    <p class="sub">{% if v.id %}Password last changed {{ dmy(v.rotated_on) or 'not recorded' }}. Leave the password empty to keep the current one.{% else %}Logins, system and admin passwords, licence keys, Wi-Fi keys.{% endif %}</p>
   </div>
-  <div class="actions" style="margin-top:18px">
+</header>
+{% if errors %}<div class="alert err" role="alert">{{ errors|join(' · ') }}</div>{% endif %}
+
+<form method="post" class="sheet" autocomplete="off">
+  <section class="group">
+    <div class="group-head"><h2>Where it belongs</h2><p>The group is the tab it appears under, like a sheet in your Excel file.</p></div>
+    <div class="fields">
+      <div class="fld"><label for="kind">Group <span class="req">*</span></label>
+        <input id="kind" name="kind" value="{{ v.kind or '' }}" list="dl-groups" required placeholder="e.g. SAP credentials">
+        <datalist id="dl-groups">{% for g in group_names or [] %}<option value="{{ g }}">{% endfor %}</datalist></div>
+      <div class="fld"><label for="title">Name <span class="req">*</span></label>
+        <input id="title" name="title" value="{{ v.title or '' }}" required placeholder="e.g. SAP B1 manager login"></div>
+      <div class="fld"><label for="company">Company</label><select id="company" name="company"><option value="">Group / shared</option>
+        {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if v.company == k }}>{{ b.name }}</option>{% endfor %}</select></div>
+    </div>
+  </section>
+  <section class="group">
+    <div class="group-head"><h2>Login</h2><p>Use Generate for a strong 16-character password.</p></div>
+    <div class="fields">
+      <div class="fld"><label for="username">Username</label><input id="username" class="mono" name="username" value="{{ v.username or '' }}" autocomplete="off"></div>
+      <div class="fld"><label for="secret">Password / key</label>
+        <input name="secret" id="secret" class="mono" type="password" autocomplete="new-password" placeholder="{{ 'unchanged' if v.id else '' }}">
+        <div class="actions" style="margin-top:8px"><button type="button" class="btn sm ghost" id="toggle">Show</button>
+          <button type="button" class="btn sm ghost" id="gen">Generate</button></div></div>
+      <div class="fld"><label for="url_host">URL / IP / host</label><input id="url_host" class="mono" name="url_host" value="{{ v.url_host or '' }}" placeholder="https://… or 192.168.1.1"></div>
+    </div>
+  </section>
+  <section class="group">
+    <div class="group-head"><h2>More</h2><p>Notes are encrypted like the password.</p></div>
+    <div class="fields">
+      <div class="fld"><label for="asset_id">Linked asset</label><select id="asset_id" name="asset_id"><option value="">None</option>
+        {% for a in assets %}<option value="{{ a.id }}" {{ 'selected' if v.asset_id == a.id }}>{{ a.asset_code }} · {{ a.category }} {{ a.make or '' }} {{ a.model or '' }}</option>{% endfor %}</select></div>
+      <div class="fld wide"><label for="notes">Notes</label>
+        <textarea id="notes" name="notes" rows="4" placeholder="Recovery codes, licence details, vendor support contact">{{ v.notes or '' }}</textarea></div>
+    </div>
+  </section>
+  <div class="savebar">
+    {% if v.id and user.role == 'admin' %}
+      <button type="submit" form="del" class="btn danger" style="margin-right:auto">Delete</button>
+    {% endif %}
+    <a class="btn ghost" href="/vault{{ '?g=' ~ v.kind|urlencode if v.kind }}">Cancel</a>
     <button class="btn">{{ 'Save changes' if v.id else 'Save password' }}</button>
-    <a class="btn ghost" href="/vault">Cancel</a>
   </div>
 </form>
 {% if v.id and user.role == 'admin' %}
-<form method="post" action="/vault/{{ v.id }}/delete" onsubmit="return confirm('Delete this entry permanently?')">
-  <button class="btn danger">Delete entry</button></form>
+<form id="del" method="post" action="/vault/{{ v.id }}/delete" onsubmit="return confirm('Delete this entry permanently?')"></form>
 {% endif %}
+
 {% if history %}
-<div class="card" style="margin-top:18px"><h2>Access history</h2><ul class="history">
+<div class="card" style="margin-top:20px"><h2>Access history</h2><ul class="history">
   {% for h in history %}<li><b>{{ h.action }}</b> · {{ h.user_email }} · <span class="muted">{{ when(h.at) }}</span>{% if h.detail %} — {{ h.detail }}{% endif %}</li>{% endfor %}
 </ul></div>
 {% endif %}

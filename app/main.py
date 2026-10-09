@@ -34,10 +34,62 @@ def ensure_db():
 app = FastAPI(title="IT Assets & Vault", docs_url=None, redoc_url=None, openapi_url=None)
 
 
+def setup_problems() -> list[str]:
+    """Plain-language checks of the Vercel environment variables (never shows secret values)."""
+    problems = []
+    for name in ("DATABASE_URL", "SECRET_KEY", "VAULT_KEY"):
+        if not os.environ.get(name, "").strip():
+            problems.append(f"<b>{name}</b> is missing. Add it in Vercel → Settings → Environment Variables.")
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if url:
+        if url.startswith("DATABASE_URL=") or url[:1] in "\"'":
+            problems.append("<b>DATABASE_URL</b> must start with <code>postgresql://</code> — remove "
+                            "<code>DATABASE_URL=</code> and any quote marks from the value.")
+        elif not url.startswith(("postgresql://", "postgres://")):
+            problems.append("<b>DATABASE_URL</b> must start with <code>postgresql://</code>.")
+        elif "****" in url:
+            problems.append("<b>DATABASE_URL</b> contains <code>****</code> — in Neon click "
+                            "<i>Show password</i> before copying.")
+    key = os.environ.get("VAULT_KEY", "").strip()
+    if key:
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(key.encode())
+        except Exception:
+            problems.append("<b>VAULT_KEY</b> is not a valid key. It must be the 44-character value "
+                            "from the second key command (ends with <code>=</code>).")
+    return problems
+
+
+def _setup_page(problems: list[str]) -> HTMLResponse:
+    items = "".join(f"<li style='margin-bottom:10px'>{p}</li>" for p in problems)
+    return HTMLResponse(
+        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Setup needed</title><body style='font:15px/1.5 system-ui,sans-serif;max-width:640px;margin:8vh auto;"
+        "padding:0 20px;color:#1E1D1D'><h1 style='color:#0A2B66'>IT Assets &amp; Vault — setup needed</h1>"
+        f"<ul>{items}</ul><p style='color:#5f6673'>After changing environment variables in Vercel, go to "
+        "<b>Deployments → ⋯ → Redeploy</b>. New values only take effect after a redeploy.</p></body>",
+        status_code=503)
+
+
 @app.middleware("http")
 async def _setup_and_headers(request: Request, call_next):
-    if not request.url.path.startswith("/static"):
-        ensure_db()
+    if not request.url.path.startswith("/static") and not _db_ready:
+        problems = setup_problems()
+        if not problems:
+            try:
+                ensure_db()
+            except Exception as exc:
+                msg = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+                url = os.environ.get("DATABASE_URL", "")
+                pw = url.split("://", 1)[-1].split("@", 1)[0].split(":", 1)[-1] if "@" in url else ""
+                if pw:
+                    msg = msg.replace(pw, "****")
+                problems.append("Could not connect to the Neon database: <code>"
+                                + msg.replace("<", "&lt;")[:300] + "</code><br>Check that DATABASE_URL "
+                                "is the <i>pooled</i> Neon connection string and the password is correct.")
+        if problems:
+            return _setup_page(problems)
     resp = await call_next(request)
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")

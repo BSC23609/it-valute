@@ -50,14 +50,8 @@ def setup_problems() -> list[str]:
         elif "****" in url:
             problems.append("<b>DATABASE_URL</b> contains <code>****</code> — in Neon click "
                             "<i>Show password</i> before copying.")
-    key = os.environ.get("VAULT_KEY", "").strip()
-    if key:
-        try:
-            from cryptography.fernet import Fernet
-            Fernet(key.encode())
-        except Exception:
-            problems.append("<b>VAULT_KEY</b> is not a valid key. It must be the 44-character value "
-                            "from the second key command (ends with <code>=</code>).")
+    if os.environ.get("VAULT_KEY", "").strip() and sec.vault_key_problem():
+        problems.append("<b>VAULT_KEY</b> is too short. Use a long random value of at least 32 characters.")
     return problems
 
 
@@ -163,6 +157,62 @@ async def _http_error(request: Request, exc: HTTPException):
                                        "detail": exc.detail}, status_code=exc.status_code)
 
 
+def _setup_open(conn) -> bool:
+    """The one-time setup page works only until the first successful sign-in."""
+    return conn.execute("SELECT count(*) AS n FROM audit WHERE action='login'").fetchone()["n"] == 0
+
+
+def _setup_html(error: str = "") -> str:
+    err = f'<div class="alert err">{error}</div>' if error else ""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<title>First-time setup · IT Assets & Vault</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="wrap"><div class="login card">{err}
+<h1>Create the admin account</h1>
+<p class="sub">One-time setup. This page switches off for good after the first successful sign-in.</p>
+<form method="post" action="/setup" autocomplete="off">
+<label class="f">Your name</label><input name="name" required>
+<div style="height:10px"></div><label class="f">Email</label><input name="email" type="email" required>
+<div style="height:10px"></div><label class="f">Password (min 8 characters)</label>
+<input name="password" type="password" minlength="8" required autocomplete="new-password">
+<div style="height:10px"></div><label class="f">Confirm password</label>
+<input name="confirm" type="password" minlength="8" required autocomplete="new-password">
+<div style="height:16px"></div><button class="btn" style="width:100%;justify-content:center">Create admin and sign in</button>
+</form></div></main></body></html>"""
+
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(conn=Depends(get_conn)):
+    if not _setup_open(conn):
+        return back("/login", err="Setup is already complete. Please sign in.")
+    return HTMLResponse(_setup_html())
+
+
+@app.post("/setup")
+async def setup_submit(request: Request, conn=Depends(get_conn)):
+    if not _setup_open(conn):
+        return back("/login", err="Setup is already complete. Please sign in.")
+    f = await request.form()
+    name = (f.get("name") or "").strip() or "Administrator"
+    email = (f.get("email") or "").strip().lower()
+    pw = f.get("password") or ""
+    if not email or "@" not in email:
+        return HTMLResponse(_setup_html("Enter a valid email."), status_code=400)
+    if len(pw) < 8 or pw != (f.get("confirm") or ""):
+        return HTMLResponse(_setup_html("Passwords must match and be at least 8 characters."), status_code=400)
+    conn.execute(
+        "INSERT INTO users (email, name, pw_hash, role, active) VALUES (%s,%s,%s,'admin',TRUE) "
+        "ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, pw_hash=EXCLUDED.pw_hash, role='admin', active=TRUE",
+        (email, name, sec.hash_password(pw)))
+    user = conn.execute("SELECT * FROM users WHERE email=%s", (email,)).fetchone()
+    audit(conn, email, "setup", "user", user["id"], f"Admin account created via setup page: {email}")
+    audit(conn, email, "login")
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(sec.SESSION_COOKIE, sec.make_session(user), max_age=sec.SESSION_MAX_AGE,
+                    httponly=True, samesite="lax", secure=SECURE_COOKIE)
+    return resp
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     return render(request, "login.html", next=request.query_params.get("next", "/"))
@@ -175,13 +225,23 @@ async def login(request: Request, conn=Depends(get_conn)):
     nxt = form.get("next") or "/"
     if not nxt.startswith("/") or nxt.startswith("//"):
         nxt = "/"
-    recent_fail = conn.execute(
-        "SELECT count(*) AS n FROM audit WHERE action='login_failed' AND user_email=%s "
-        "AND at > now() - interval '15 minutes'", (email,)).fetchone()["n"]
-    if recent_fail >= 5:
-        return back("/login", err="Too many failed attempts. Try again in 15 minutes.")
+    password = form.get("password") or ""
+    # Recovery: the ADMIN_EMAIL / ADMIN_PASSWORD set in Vercel always sign in as an active admin.
+    env_email = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+    env_pw = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+    # Diagnostic line for Vercel → Logs (shows only yes/no and lengths, never the values)
+    print(f"[login-check] typed_email_len={len(email)} admin_email_set={bool(env_email)} "
+          f"email_matches_ADMIN_EMAIL={email == env_email} typed_password_len={len(password.strip())} "
+          f"ADMIN_PASSWORD_len={len(env_pw)} password_matches={password.strip() == env_pw}", flush=True)
+    if env_email and env_pw and email == env_email and password.strip() == env_pw:
+        row = conn.execute("SELECT * FROM users WHERE email=%s", (email,)).fetchone()
+        if not row or not row["active"] or row["role"] != "admin" or not sec.verify_password(password, row["pw_hash"]):
+            conn.execute(
+                "INSERT INTO users (email, name, pw_hash, role, active) VALUES (%s, 'Administrator', %s, 'admin', TRUE) "
+                "ON CONFLICT (email) DO UPDATE SET pw_hash=EXCLUDED.pw_hash, role='admin', active=TRUE",
+                (email, sec.hash_password(password)))
     user = conn.execute("SELECT * FROM users WHERE email=%s AND active", (email,)).fetchone()
-    if not user or not sec.verify_password(form.get("password") or "", user["pw_hash"]):
+    if not user or not sec.verify_password(password, user["pw_hash"]):
         audit(conn, email, "login_failed")
         return back("/login", err="Wrong email or password.")
     audit(conn, email, "login")

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_macros.html" import dmy %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Password vault</h1>
+    <p class="sub">{{ total }} saved in {{ groups|length }} group{{ '' if groups|length == 1 else 's' }}. Passwords stay hidden until you show them, and every view is logged.</p>
+  </div>
+  <div class="actions">
+    <a class="btn" href="/vault/new{{ '?g=' ~ group|urlencode if group and not q }}">+ New password</a>
+  </div>
+</header>
+
+{% if groups %}
+<nav class="tabs" aria-label="Password groups">
+  {% for g in groups %}
+    <a href="/vault?g={{ g.name|urlencode }}" class="tab {{ 'on' if g.name == group and not q }}"
+       {% if g.name == group and not q %}aria-current="page"{% endif %}>{{ g.name }} <span class="count">{{ g.n }}</span></a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<form class="filters" method="get" action="/vault">
+  <input name="q" value="{{ q }}" placeholder="Search all groups: name, username, URL / IP, asset code" aria-label="Search passwords">
+  <button class="btn ghost">Search</button>
+  {% if q %}<a class="btn ghost" href="/vault">Clear search</a>{% endif %}
+</form>
+
+{% if not groups %}
+  <div class="card empty">
+    <h2>No passwords yet</h2>
+    <p class="muted">Add your first password and give it a group, such as “SAP credentials” or “Wi-Fi credentials”. Each group becomes a tab here.</p>
+    <div class="actions"><a class="btn" href="/vault/new">+ New password</a></div>
+  </div>
+{% else %}
+<div class="card table-card">
+  <div class="table-bar">
+    <h2>{% if q %}Results for “{{ q }}”{% else %}{{ group }}{% endif %} <span class="muted">· {{ rows|length }}</span></h2>
+    {% if not q and rows %}
+    <button type="button" class="btn sm" id="showAll" data-group="{{ group }}">Show passwords</button>
+    {% endif %}
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr>
+      <th>Name</th>{% if q %}<th>Group</th>{% endif %}<th>Username</th><th>Password</th><th>URL / IP</th><th>Notes</th><th>Asset</th><th>Changed</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for v in rows %}
+      {% set old = (not v.rotated_on) or (today - v.rotated_on).days > 90 %}
+      <tr>
+        <td><b>{{ v.title }}</b>{% if v.company %}<div class="muted small">{{ BRANDS[v.company].short|title }}</div>{% endif %}</td>
+        {% if q %}<td><a href="/vault?g={{ v.kind|urlencode }}">{{ v.kind }}</a></td>{% endif %}
+        <td>{% if v.username %}<span class="copyable"><span class="mono">{{ v.username }}</span>
+            <button type="button" class="icon-btn" data-copy="{{ v.username }}" title="Copy username" aria-label="Copy username">⧉</button></span>{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>{% if v.has_secret %}<span class="copyable"><span class="mono secret-val" id="s{{ v.id }}" data-hidden="1">••••••••</span>
+            <button type="button" class="icon-btn" data-reveal="{{ v.id }}" title="Show password" aria-label="Show password">👁</button>
+            <button type="button" class="icon-btn" data-copysecret="{{ v.id }}" title="Copy password" aria-label="Copy password">⧉</button></span>
+            {% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="wrap">{% if v.url_host and v.url_host.startswith('http') %}<a href="{{ v.url_host }}" target="_blank" rel="noopener noreferrer">{{ v.url_host }}</a>{% else %}<span class="mono">{{ v.url_host or '' }}</span>{% endif %}</td>
+        <td class="notes-cell">{% if v.has_notes %}<span class="muted" id="n{{ v.id }}">hidden</span>{% endif %}</td>
+        <td>{% if v.asset_id %}<a class="mono" href="/assets/{{ v.asset_id }}">{{ v.asset_code }}</a>{% endif %}</td>
+        <td>{% if v.rotated_on %}<span class="chip {{ 'warn' if old else 'ok' }}">{{ dmy(v.rotated_on) }}</span>{% else %}<span class="chip grey">not recorded</span>{% endif %}</td>
+        <td><a class="btn sm ghost" href="/vault/{{ v.id }}/edit">Edit</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted" style="padding:28px;text-align:center">Nothing matches.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const HIDE_AFTER = 60000;
+let hideTimer;
+function setSecret(id, val, notes){
+  const el = document.getElementById('s'+id); if (!el) return;
+  el.textContent = val || '—'; el.dataset.hidden = '0';
+  if (notes !== undefined) { const n = document.getElementById('n'+id); if (n) { n.textContent = notes; n.classList.remove('muted'); } }
+}
+function hideAll(){
+  document.querySelectorAll('.secret-val').forEach(el => { el.textContent = '••••••••'; el.dataset.hidden = '1'; });
+  document.querySelectorAll('.notes-cell span').forEach(n => { n.textContent = 'hidden'; n.classList.add('muted'); });
+  const b = document.getElementById('showAll'); if (b) b.textContent = 'Show passwords';
+}
+async function fetchSecret(id){
+  const r = await fetch(`/vault/${id}/reveal`, {method:'POST', headers:{'Accept':'application/json'}});
+  if (!r.ok) { alert('Could not load the password'); return null; }
+  return (await r.json()).secret;
+}
+function flash(btn, t){ const o = btn.textContent; btn.textContent = t; setTimeout(()=>btn.textContent=o, 1200); }
+function armTimer(){ clearTimeout(hideTimer); hideTimer = setTimeout(hideAll, HIDE_AFTER); }
+
+const showAll = document.getElementById('showAll');
+if (showAll) showAll.addEventListener('click', async () => {
+  if (showAll.textContent === 'Hide passwords') { hideAll(); return; }
+  const fd = new FormData(); fd.append('g', showAll.dataset.group);
+  const r = await fetch('/vault/reveal-group', {method:'POST', body: fd, headers:{'Accept':'application/json'}});
+  if (!r.ok) { alert('Could not load passwords'); return; }
+  const data = await r.json();
+  Object.entries(data).forEach(([id, v]) => setSecret(id, v.s, v.n || ''));
+  showAll.textContent = 'Hide passwords'; armTimer();
+});
+document.querySelectorAll('[data-reveal]').forEach(b => b.addEventListener('click', async () => {
+  const id = b.dataset.reveal, el = document.getElementById('s'+id);
+  if (el.dataset.hidden === '0') { el.textContent = '••••••••'; el.dataset.hidden = '1'; return; }
+  const s = await fetchSecret(id); if (s === null) return;
+  setSecret(id, s); armTimer();
+}));
+document.querySelectorAll('[data-copysecret]').forEach(b => b.addEventListener('click', async () => {
+  const id = b.dataset.copysecret, el = document.getElementById('s'+id);
+  const s = el.dataset.hidden === '0' ? el.textContent : await fetchSecret(id); if (s === null) return;
+  await navigator.clipboard.writeText(s); flash(b, '✓');
+}));
+document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
+  await navigator.clipboard.writeText(b.dataset.copy); flash(b, '✓');
+}));
+</script>
+{% endblock %}

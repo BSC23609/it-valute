@@ -157,6 +157,62 @@ async def _http_error(request: Request, exc: HTTPException):
                                        "detail": exc.detail}, status_code=exc.status_code)
 
 
+def _setup_open(conn) -> bool:
+    """The one-time setup page works only until the first successful sign-in."""
+    return conn.execute("SELECT count(*) AS n FROM audit WHERE action='login'").fetchone()["n"] == 0
+
+
+def _setup_html(error: str = "") -> str:
+    err = f'<div class="alert err">{error}</div>' if error else ""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<title>First-time setup · IT Assets & Vault</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="wrap"><div class="login card">{err}
+<h1>Create the admin account</h1>
+<p class="sub">One-time setup. This page switches off for good after the first successful sign-in.</p>
+<form method="post" action="/setup" autocomplete="off">
+<label class="f">Your name</label><input name="name" required>
+<div style="height:10px"></div><label class="f">Email</label><input name="email" type="email" required>
+<div style="height:10px"></div><label class="f">Password (min 8 characters)</label>
+<input name="password" type="password" minlength="8" required autocomplete="new-password">
+<div style="height:10px"></div><label class="f">Confirm password</label>
+<input name="confirm" type="password" minlength="8" required autocomplete="new-password">
+<div style="height:16px"></div><button class="btn" style="width:100%;justify-content:center">Create admin and sign in</button>
+</form></div></main></body></html>"""
+
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(conn=Depends(get_conn)):
+    if not _setup_open(conn):
+        return back("/login", err="Setup is already complete. Please sign in.")
+    return HTMLResponse(_setup_html())
+
+
+@app.post("/setup")
+async def setup_submit(request: Request, conn=Depends(get_conn)):
+    if not _setup_open(conn):
+        return back("/login", err="Setup is already complete. Please sign in.")
+    f = await request.form()
+    name = (f.get("name") or "").strip() or "Administrator"
+    email = (f.get("email") or "").strip().lower()
+    pw = f.get("password") or ""
+    if not email or "@" not in email:
+        return HTMLResponse(_setup_html("Enter a valid email."), status_code=400)
+    if len(pw) < 8 or pw != (f.get("confirm") or ""):
+        return HTMLResponse(_setup_html("Passwords must match and be at least 8 characters."), status_code=400)
+    conn.execute(
+        "INSERT INTO users (email, name, pw_hash, role, active) VALUES (%s,%s,%s,'admin',TRUE) "
+        "ON CONFLICT (email) DO UPDATE SET name=EXCLUDED.name, pw_hash=EXCLUDED.pw_hash, role='admin', active=TRUE",
+        (email, name, sec.hash_password(pw)))
+    user = conn.execute("SELECT * FROM users WHERE email=%s", (email,)).fetchone()
+    audit(conn, email, "setup", "user", user["id"], f"Admin account created via setup page: {email}")
+    audit(conn, email, "login")
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(sec.SESSION_COOKIE, sec.make_session(user), max_age=sec.SESSION_MAX_AGE,
+                    httponly=True, samesite="lax", secure=SECURE_COOKIE)
+    return resp
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     return render(request, "login.html", next=request.query_params.get("next", "/"))
@@ -169,13 +225,23 @@ async def login(request: Request, conn=Depends(get_conn)):
     nxt = form.get("next") or "/"
     if not nxt.startswith("/") or nxt.startswith("//"):
         nxt = "/"
-    recent_fail = conn.execute(
-        "SELECT count(*) AS n FROM audit WHERE action='login_failed' AND user_email=%s "
-        "AND at > now() - interval '15 minutes'", (email,)).fetchone()["n"]
-    if recent_fail >= 5:
-        return back("/login", err="Too many failed attempts. Try again in 15 minutes.")
+    password = form.get("password") or ""
+    # Recovery: the ADMIN_EMAIL / ADMIN_PASSWORD set in Vercel always sign in as an active admin.
+    env_email = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+    env_pw = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+    # Diagnostic line for Vercel → Logs (shows only yes/no and lengths, never the values)
+    print(f"[login-check] typed_email_len={len(email)} admin_email_set={bool(env_email)} "
+          f"email_matches_ADMIN_EMAIL={email == env_email} typed_password_len={len(password.strip())} "
+          f"ADMIN_PASSWORD_len={len(env_pw)} password_matches={password.strip() == env_pw}", flush=True)
+    if env_email and env_pw and email == env_email and password.strip() == env_pw:
+        row = conn.execute("SELECT * FROM users WHERE email=%s", (email,)).fetchone()
+        if not row or not row["active"] or row["role"] != "admin" or not sec.verify_password(password, row["pw_hash"]):
+            conn.execute(
+                "INSERT INTO users (email, name, pw_hash, role, active) VALUES (%s, 'Administrator', %s, 'admin', TRUE) "
+                "ON CONFLICT (email) DO UPDATE SET pw_hash=EXCLUDED.pw_hash, role='admin', active=TRUE",
+                (email, sec.hash_password(password)))
     user = conn.execute("SELECT * FROM users WHERE email=%s AND active", (email,)).fetchone()
-    if not user or not sec.verify_password(form.get("password") or "", user["pw_hash"]):
+    if not user or not sec.verify_password(password, user["pw_hash"]):
         audit(conn, email, "login_failed")
         return back("/login", err="Wrong email or password.")
     audit(conn, email, "login")
@@ -402,24 +468,182 @@ def bulk_labels(request: Request, user=Depends(current_user), conn=Depends(get_c
 
 
 # ---------------------------------------------------------------- password vault
+def _vault_groups(conn):
+    return conn.execute("SELECT kind AS name, count(*) AS n FROM vault GROUP BY kind ORDER BY lower(kind)").fetchall()
+
+
 @app.get("/vault", response_class=HTMLResponse)
 def vault_list(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
     p = request.query_params
+    groups = _vault_groups(conn)
+    group = p.get("g") or ""
+    q = (p.get("q") or "").strip()
     where, args = [], []
-    if p.get("q"):
-        like = f"%{p['q'].strip()}%"
-        where.append("(v.title ILIKE %s OR v.url_host ILIKE %s OR v.username ILIKE %s OR a.asset_code ILIKE %s)")
-        args += [like] * 4
-    for col in ("kind", "company"):
-        if p.get(col):
-            where.append(f"v.{col} = %s")
-            args.append(p[col])
+    if q:
+        like = f"%{q}%"
+        where.append("(v.title ILIKE %s OR v.url_host ILIKE %s OR v.username ILIKE %s OR a.asset_code ILIKE %s "
+                     "OR v.kind ILIKE %s)")
+        args += [like] * 5
+    elif group:
+        where.append("v.kind = %s")
+        args.append(group)
+    elif groups:
+        group = groups[0]["name"]          # open the first group by default
+        where.append("v.kind = %s")
+        args.append(group)
     sql = ("SELECT v.id, v.title, v.kind, v.company, v.url_host, v.username, v.rotated_on, v.updated_at, "
-           "v.secret_enc IS NOT NULL AS has_secret, a.id AS asset_id, a.asset_code "
+           "v.secret_enc IS NOT NULL AS has_secret, v.notes_enc IS NOT NULL AS has_notes, "
+           "a.id AS asset_id, a.asset_code "
            "FROM vault v LEFT JOIN assets a ON a.id = v.asset_id "
-           + ("WHERE " + " AND ".join(where) if where else "") + " ORDER BY v.title")
+           + ("WHERE " + " AND ".join(where) if where else "") + " ORDER BY lower(v.title), v.id")
     rows = conn.execute(sql, args).fetchall()
-    return render(request, "vault.html", user, rows=rows, f=p, today=dt.date.today())
+    return render(request, "vault.html", user, rows=rows, groups=groups, group=group, q=q,
+                  total=sum(g["n"] for g in groups), today=dt.date.today())
+
+
+@app.post("/vault/reveal-group")
+async def vault_reveal_group(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
+    form = await request.form()
+    group = (form.get("g") or "").strip()
+    rows = conn.execute("SELECT id, secret_enc, notes_enc FROM vault WHERE kind=%s", (group,)).fetchall()
+    audit(conn, user["email"], "reveal", "vault", None, f"Viewed all {len(rows)} passwords in group '{group}'")
+    return JSONResponse({str(r["id"]): {"s": sec.decrypt(r["secret_enc"]), "n": sec.decrypt(r["notes_enc"])}
+                         for r in rows}, headers={"Cache-Control": "no-store"})
+
+
+# ---- Excel / CSV import: every sheet becomes a group (tab) ----
+_COLMAP = {
+    "secret": ["password", "passwd", "pwd", "pass", "passcode", "pass code", "pin", "key", "wifi password",
+               "wi-fi password", "licence key", "license key", "product key", "security key"],
+    "username": ["username", "user name", "user id", "userid", "user", "login", "login id", "login name",
+                 "mail id", "email id", "email", "e-mail", "mail", "account id"],
+    "url_host": ["url", "link", "website", "web site", "portal", "ip address", "ip", "host", "hostname",
+                 "server", "address", "domain"],
+    "title": ["name", "title", "description", "system", "software", "application", "app", "account",
+              "ssid", "wifi name", "wi-fi name", "network name", "device", "site", "particulars", "purpose",
+              "service", "module", "location", "company name"],
+}
+
+
+def _norm(h):
+    return " ".join(str(h or "").strip().lower().replace("_", " ").replace(".", " ").split())
+
+
+def _map_header(cells):
+    """Return {field: column_index} for a header row, plus the list of other (column, label) pairs."""
+    mapping, taken = {}, set()
+    norm = [_norm(c) for c in cells]
+    for field in ("secret", "username", "url_host", "title"):
+        for syn in _COLMAP[field]:                      # exact header match first
+            for i, h in enumerate(norm):
+                if i not in taken and h == syn:
+                    mapping[field], _ = i, taken.add(i)
+                    break
+            if field in mapping:
+                break
+        if field not in mapping:                         # then "contains" match
+            for i, h in enumerate(norm):
+                if i not in taken and h and any(syn in h for syn in _COLMAP[field] if len(syn) > 3):
+                    mapping[field], _ = i, taken.add(i)
+                    break
+    serial_cols = {"s no", "sno", "s no ", "sl no", "slno", "sr no", "srno", "serial no", "#", "no", "sl", "s"}
+    others = [(i, str(cells[i]).strip()) for i, h in enumerate(norm)
+              if h and i not in taken and h.replace(" ", "") not in {s.replace(" ", "") for s in serial_cols}]
+    return mapping, others
+
+
+def _cell(v):
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if isinstance(v, (dt.datetime, dt.date)):
+        return v.strftime("%d-%m-%Y")
+    return str(v).strip()
+
+
+def _parse_sheet(name, rows):
+    """rows: list of tuples. Finds the header row in the first 15 rows and returns entry dicts."""
+    rows = [r for r in rows if r is not None]
+    header_i, mapping, others = None, {}, []
+    for i, r in enumerate(rows[:15]):
+        m, o = _map_header(list(r))
+        if "secret" in m or len(m) >= 2:
+            header_i, mapping, others = i, m, o
+            break
+    if header_i is None:
+        return [], f"no header row with a Password / Username column found"
+    out = []
+    for n, r in enumerate(rows[header_i + 1:], start=header_i + 2):
+        r = list(r) + [None] * 50
+        get = lambda f: _cell(r[mapping[f]]) if f in mapping else ""
+        title, user_, secret, host = get("title"), get("username"), get("secret"), get("url_host")
+        extra = [f"{label}: {_cell(r[i])}" for i, label in others if _cell(r[i])]
+        if not (title or user_ or secret or host):
+            continue
+        if not title:                                   # fall back to the first extra column, then a row label
+            if extra:
+                title = extra[0].split(": ", 1)[1]
+            else:
+                title = user_ or host or f"{name} row {n}"
+        out.append({"title": title[:200], "username": user_[:200] or None, "secret": secret,
+                    "url_host": host[:300] or None, "notes": "\n".join(extra)})
+    return out, None
+
+
+@app.get("/vault/import", response_class=HTMLResponse)
+def vault_import_page(request: Request, user=Depends(can_edit)):
+    return render(request, "vault_import.html", user, result=None)
+
+
+@app.post("/vault/import", response_class=HTMLResponse)
+async def vault_import(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
+    form = await request.form()
+    up = form.get("file")
+    company = form.get("company") if form.get("company") in BRANDS else None
+    if not up or not getattr(up, "filename", ""):
+        return render(request, "vault_import.html", user, result=None, error="Choose an Excel (.xlsx) or CSV file.")
+    data = await up.read()
+    fname = up.filename
+    sheets = []
+    try:
+        if fname.lower().endswith(".csv"):
+            text = data.decode("utf-8-sig", errors="replace")
+            sheets.append((os.path.splitext(os.path.basename(fname))[0], list(csv.reader(io.StringIO(text)))))
+        elif fname.lower().endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                if ws.sheet_state != "visible":
+                    continue
+                sheets.append((ws.title.strip(), [tuple(r) for r in ws.iter_rows(values_only=True)]))
+        else:
+            return render(request, "vault_import.html", user, result=None,
+                          error="Only .xlsx or .csv files can be imported. In Excel use File → Save As → Excel Workbook (.xlsx).")
+    except Exception as exc:
+        return render(request, "vault_import.html", user, result=None, error=f"Could not read the file: {exc}")
+
+    result = []
+    for name, rows in sheets:
+        entries, problem = _parse_sheet(name, rows)
+        added = skipped = 0
+        for e in entries:
+            dup = conn.execute("SELECT 1 FROM vault WHERE kind=%s AND title=%s AND coalesce(username,'')=%s",
+                               (name, e["title"], e["username"] or "")).fetchone()
+            if dup:
+                skipped += 1
+                continue
+            conn.execute(
+                "INSERT INTO vault (title, kind, company, url_host, username, secret_enc, notes_enc, rotated_on, "
+                "created_by, updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s)",
+                (e["title"], name, company, e["url_host"], e["username"], sec.encrypt(e["secret"]),
+                 sec.encrypt(e["notes"]), user["email"], user["email"]))
+            added += 1
+        result.append({"name": name, "added": added, "skipped": skipped, "problem": problem})
+    total = sum(r["added"] for r in result)
+    audit(conn, user["email"], "import", "vault", None,
+          f"Imported {total} entries from '{fname}': " + ", ".join(f"{r['name']} ({r['added']})" for r in result))
+    return render(request, "vault_import.html", user, result=result, total=total, fname=fname)
 
 
 def _asset_options(conn):
@@ -429,9 +653,15 @@ def _asset_options(conn):
 @app.get("/vault/new", response_class=HTMLResponse)
 def vault_new(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
     aid = request.query_params.get("asset_id")
-    v = {"id": None, "title": "", "kind": "", "company": "", "url_host": "", "username": "",
-         "notes": "", "asset_id": int(aid) if aid and aid.isdigit() else None, "rotated_on": None}
-    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[])
+    v = {"id": None, "title": "", "kind": request.query_params.get("g", ""), "company": "", "url_host": "",
+         "username": "", "notes": "", "asset_id": int(aid) if aid and aid.isdigit() else None, "rotated_on": None}
+    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[],
+                  group_names=_group_names(conn))
+
+
+def _group_names(conn):
+    names = [g["name"] for g in _vault_groups(conn)]
+    return names + [k for k in VAULT_KINDS if k not in names]
 
 
 def _clean_vault_form(form):
@@ -440,8 +670,10 @@ def _clean_vault_form(form):
     errors = []
     if not data["title"]:
         errors.append("Title is required")
-    if data["kind"] not in VAULT_KINDS:
-        errors.append("Type is required")
+    if not data["kind"]:
+        errors.append("Group is required (e.g. SAP credentials, Wi-Fi credentials)")
+    elif len(data["kind"]) > 80:
+        errors.append("Group name is too long")
     if data["company"] and data["company"] not in BRANDS:
         data["company"] = None
     return data, errors
@@ -453,7 +685,7 @@ async def vault_create(request: Request, user=Depends(can_edit), conn=Depends(ge
     data, errors = _clean_vault_form(form)
     if errors:
         data.update(id=None, notes=form.get("notes", ""), rotated_on=None)
-        return render(request, "vault_form.html", user, v=data, assets=_asset_options(conn), errors=errors)
+        return render(request, "vault_form.html", user, group_names=_group_names(conn), v=data, assets=_asset_options(conn), errors=errors)
     secret = form.get("secret") or ""
     row = conn.execute(
         "INSERT INTO vault (title, kind, company, url_host, username, secret_enc, notes_enc, asset_id, rotated_on, "
@@ -462,7 +694,7 @@ async def vault_create(request: Request, user=Depends(can_edit), conn=Depends(ge
          sec.encrypt(form.get("notes") or ""), data["asset_id"], dt.date.today() if secret else None,
          user["email"], user["email"])).fetchone()
     audit(conn, user["email"], "create", "vault", row["id"], f"Created entry '{data['title']}'")
-    return back("/vault", msg=f"Saved '{data['title']}'.")
+    return back(f"/vault?g={quote(data['kind'])}", msg=f"Saved '{data['title']}'.")
 
 
 def _get_vault(conn, vid):
@@ -478,7 +710,8 @@ def vault_edit(vid: int, request: Request, user=Depends(can_edit), conn=Depends(
     v["notes"] = sec.decrypt(v["notes_enc"])
     hist = conn.execute("SELECT * FROM audit WHERE entity='vault' AND entity_id=%s ORDER BY at DESC LIMIT 50",
                         (vid,)).fetchall()
-    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[], history=hist)
+    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[], history=hist,
+                  group_names=_group_names(conn))
 
 
 @app.post("/vault/{vid}/edit")
@@ -488,7 +721,7 @@ async def vault_update(vid: int, request: Request, user=Depends(can_edit), conn=
     data, errors = _clean_vault_form(form)
     if errors:
         data.update(id=vid, notes=form.get("notes", ""), rotated_on=old["rotated_on"])
-        return render(request, "vault_form.html", user, v=data, assets=_asset_options(conn), errors=errors)
+        return render(request, "vault_form.html", user, group_names=_group_names(conn), v=data, assets=_asset_options(conn), errors=errors)
     secret = form.get("secret") or ""
     changed = [k for k in ("title", "kind", "company", "url_host", "username", "asset_id") if old[k] != data[k]]
     if (form.get("notes") or "") != sec.decrypt(old["notes_enc"]):
@@ -500,13 +733,13 @@ async def vault_update(vid: int, request: Request, user=Depends(can_edit), conn=
             rotated = dt.date.today()
         secret_enc = sec.encrypt(secret)
     if not changed:
-        return back("/vault", msg="No changes.")
+        return back(f"/vault?g={quote(data['kind'] or '')}", msg="No changes.")
     conn.execute("UPDATE vault SET title=%s, kind=%s, company=%s, url_host=%s, username=%s, secret_enc=%s, "
                  "notes_enc=%s, asset_id=%s, rotated_on=%s, updated_by=%s, updated_at=now() WHERE id=%s",
                  (data["title"], data["kind"], data["company"], data["url_host"], data["username"], secret_enc,
                   sec.encrypt(form.get("notes") or ""), data["asset_id"], rotated, user["email"], vid))
     audit(conn, user["email"], "update", "vault", vid, "Changed: " + ", ".join(changed))
-    return back("/vault", msg=f"Updated '{data['title']}'.")
+    return back(f"/vault?g={quote(data['kind'])}", msg=f"Updated '{data['title']}'.")
 
 
 @app.post("/vault/{vid}/reveal")
@@ -521,7 +754,7 @@ def vault_delete(vid: int, user=Depends(admin_only), conn=Depends(get_conn)):
     v = _get_vault(conn, vid)
     conn.execute("DELETE FROM vault WHERE id=%s", (vid,))
     audit(conn, user["email"], "delete", "vault", vid, f"Deleted entry '{v['title']}'")
-    return back("/vault", msg=f"Deleted '{v['title']}'.")
+    return back(f"/vault?g={quote(v['kind'])}", msg=f"Deleted '{v['title']}'.")
 
 
 # ---------------------------------------------------------------- users & audit

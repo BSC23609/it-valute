@@ -1,43 +1,83 @@
 {% extends "base.html" %}
 {% block body %}
 {% set editing = a.id is defined and a.id %}
-<div class="head">
-  <div><h1>{{ 'Edit ' ~ a.asset_code if editing else 'New IT asset' }}</h1>
-  <p class="sub" style="margin:0">{{ 'Company is fixed because the asset code depends on it.' if editing else 'The asset code (e.g. BSC-IT-0001) is generated automatically when you save.' }}</p></div>
+
+{% macro field(col, wide=false, hint='') -%}
+{% for c, label, kind in ASSET_FIELDS if c == col %}
+<div class="fld {{ 'wide' if wide }}">
+  <label for="f-{{ c }}">{{ label }}{% if c in ('company','category') %} <span class="req" aria-hidden="true">*</span>{% endif %}</label>
+  {% if kind == 'company' %}
+    <select id="f-{{ c }}" name="company" required {{ 'disabled' if editing }}>
+      <option value="">Choose company</option>
+      {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if a.company == k }}>{{ b.name }}</option>{% endfor %}
+    </select>
+    {% if editing %}<input type="hidden" name="company" value="{{ a.company }}">{% endif %}
+  {% elif kind == 'category' %}
+    <select id="f-{{ c }}" name="category" required><option value="">Choose category</option>
+      {% for x in CATEGORIES %}<option {{ 'selected' if a.category == x }}>{{ x }}</option>{% endfor %}</select>
+  {% elif kind == 'status' %}
+    <select id="f-{{ c }}" name="status">{% for s in STATUSES %}<option {{ 'selected' if a.status == s }}>{{ s }}</option>{% endfor %}</select>
+  {% elif kind == 'textarea' %}
+    <textarea id="f-{{ c }}" name="{{ c }}" rows="3" placeholder="Accessories issued, repair history, anything worth knowing">{{ a[c] or '' }}</textarea>
+  {% elif kind == 'date' %}
+    <input id="f-{{ c }}" type="date" name="{{ c }}" value="{{ a[c].isoformat() if a[c] else '' }}">
+  {% elif kind == 'number' %}
+    <div class="affix"><span>₹</span><input id="f-{{ c }}" type="number" step="0.01" min="0" name="{{ c }}" value="{{ a[c] if a[c] is not none else '' }}"></div>
+  {% else %}
+    <input id="f-{{ c }}" name="{{ c }}" value="{{ a[c] or '' }}" {% if c in sugg %}list="dl-{{ c }}"{% endif %}
+      autocomplete="off" class="{{ 'mono' if c in ('serial_no','ip_address','mac_address','hostname') }}">
+  {% endif %}
+  {% if hint %}<p class="hint">{{ hint }}</p>{% endif %}
 </div>
-{% if errors %}<div class="alert err">{{ errors|join(' · ') }}</div>{% endif %}
-<form method="post" class="card">
-  <div class="form">
-  {% for col, label, kind in ASSET_FIELDS %}
-    <div class="{{ 'full' if kind == 'textarea' }}">
-      <label class="f">{{ label }}{% if col in ('company','category') %} *{% endif %}</label>
-      {% if kind == 'company' %}
-        <select name="company" required {{ 'disabled' if editing }}>
-          <option value="">Select company</option>
-          {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if a.company == k }}>{{ b.name }}</option>{% endfor %}
-        </select>
-        {% if editing %}<input type="hidden" name="company" value="{{ a.company }}">{% endif %}
-      {% elif kind == 'category' %}
-        <select name="category" required><option value="">Select category</option>
-          {% for c in CATEGORIES %}<option {{ 'selected' if a.category == c }}>{{ c }}</option>{% endfor %}</select>
-      {% elif kind == 'status' %}
-        <select name="status">{% for s in STATUSES %}<option {{ 'selected' if a.status == s }}>{{ s }}</option>{% endfor %}</select>
-      {% elif kind == 'textarea' %}
-        <textarea name="{{ col }}" rows="3">{{ a[col] or '' }}</textarea>
-      {% elif kind == 'date' %}
-        <input type="date" name="{{ col }}" value="{{ a[col].isoformat() if a[col] else '' }}">
-      {% elif kind == 'number' %}
-        <input type="number" step="0.01" min="0" name="{{ col }}" value="{{ a[col] if a[col] is not none else '' }}">
-      {% else %}
-        <input name="{{ col }}" value="{{ a[col] or '' }}" {% if col in sugg %}list="dl-{{ col }}"{% endif %} autocomplete="off">
-      {% endif %}
-    </div>
-  {% endfor %}
+{% endfor %}
+{%- endmacro %}
+
+<header class="page-head">
+  <div>
+    <a class="crumb" href="{{ '/assets/%d'|format(a.id) if editing else '/assets' }}">{{ 'Back to asset' if editing else 'Assets' }}</a>
+    <h1>{% if editing %}Edit <span class="tag">{{ a.asset_code }}</span>{% else %}New IT asset{% endif %}</h1>
+    <p class="sub">{{ 'Company can’t be changed because the asset code depends on it.' if editing else 'Only company and category are required. The asset code is created when you save.' }}</p>
   </div>
+</header>
+
+{% if errors %}<div class="alert err" role="alert">{{ errors|join(' · ') }}</div>{% endif %}
+
+<form method="post" class="sheet" novalidate>
+  <section class="group">
+    <div class="group-head"><h2>What it is</h2><p>Decides the asset code and what prints on the label.</p></div>
+    <div class="fields">{{ field('company') }}{{ field('category') }}{{ field('status') }}{{ field('name', true) }}</div>
+  </section>
+
+  <section class="group">
+    <div class="group-head"><h2>Hardware</h2><p>Make, model and serial number appear in the QR code.</p></div>
+    <div class="fields">{{ field('make') }}{{ field('model') }}{{ field('serial_no') }}{{ field('specs', true) }}</div>
+  </section>
+
+  <section class="group">
+    <div class="group-head"><h2>Network</h2><p>Leave blank for devices that aren’t on the network.</p></div>
+    <div class="fields">{{ field('hostname') }}{{ field('ip_address') }}{{ field('mac_address') }}{{ field('os') }}</div>
+  </section>
+
+  <section class="group">
+    <div class="group-head"><h2>Who has it</h2><p>Earlier entries are suggested as you type.</p></div>
+    <div class="fields">{{ field('assigned_to') }}{{ field('department') }}{{ field('location') }}</div>
+  </section>
+
+  <section class="group">
+    <div class="group-head"><h2>Purchase</h2><p>Warranty end date drives the dashboard reminder.</p></div>
+    <div class="fields">{{ field('vendor') }}{{ field('invoice_no') }}{{ field('cost') }}{{ field('purchase_date') }}{{ field('warranty_end') }}</div>
+  </section>
+
+  <section class="group">
+    <div class="group-head"><h2>Notes</h2></div>
+    <div class="fields">{{ field('notes', true) }}</div>
+  </section>
+
   {% for col, vals in sugg.items() %}<datalist id="dl-{{ col }}">{% for v in vals %}<option value="{{ v }}">{% endfor %}</datalist>{% endfor %}
-  <div class="actions" style="margin-top:18px">
-    <button class="btn">{{ 'Save changes' if editing else 'Create asset' }}</button>
+
+  <div class="savebar">
     <a class="btn ghost" href="{{ '/assets/%d'|format(a.id) if editing else '/assets' }}">Cancel</a>
+    <button class="btn">{{ 'Save changes' if editing else 'Create asset' }}</button>
   </div>
 </form>
 {% endblock %}

@@ -1,4 +1,5 @@
 """Login password hashing, session cookies and vault encryption."""
+import base64
 import hashlib
 import hmac
 import os
@@ -50,11 +51,36 @@ def read_session(token: str | None):
 
 
 # ---------- vault encryption (Fernet = AES-128-CBC + HMAC-SHA256) ----------
+def _clean(raw: str) -> str:
+    raw = (raw or "").strip().strip("\"'").strip()
+    if raw.upper().startswith("VAULT_KEY="):
+        raw = raw[10:].strip().strip("\"'").strip()
+    return raw
+
+
+def vault_key_problem() -> str | None:
+    """None if VAULT_KEY is usable, otherwise a short reason."""
+    raw = _clean(os.environ.get("VAULT_KEY", ""))
+    if not raw:
+        return "missing"
+    try:
+        Fernet(raw.encode())
+        return None
+    except Exception:
+        return None if len(raw) >= 32 else "too short"
+
+
 def _fernet() -> Fernet:
-    key = os.environ.get("VAULT_KEY")
-    if not key:
+    raw = _clean(os.environ.get("VAULT_KEY", ""))
+    if not raw:
         raise RuntimeError("VAULT_KEY is not set")
-    return Fernet(key.encode())
+    try:
+        return Fernet(raw.encode())          # a proper Fernet key is used as-is
+    except Exception:
+        if len(raw) < 32:
+            raise RuntimeError("VAULT_KEY is too short")
+        # any other long random secret: derive a Fernet key from it
+        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest()))
 
 
 def encrypt(value: str | None) -> str | None:

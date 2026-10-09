@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_chip %}
+{% block body %}
+<div class="head">
+  <div><h1>IT assets</h1><p class="sub" style="margin:0">{{ rows|length }} shown · tick assets to print labels in bulk</p></div>
+  <div class="actions">
+    <a class="btn ghost" href="/assets/export.csv?{{ request.url.query }}">Export CSV</a>
+    {% if user.role in ('admin','it') %}<a class="btn" href="/assets/new">+ New asset</a>{% endif %}
+  </div>
+</div>
+
+<form class="filters" method="get">
+  <input name="q" value="{{ f.q or '' }}" placeholder="Search code, serial, user, IP, location…" style="flex:1">
+  <select name="company"><option value="">All companies</option>
+    {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if f.company == k }}>{{ b.short }}</option>{% endfor %}</select>
+  <select name="category"><option value="">All categories</option>
+    {% for c in CATEGORIES %}<option {{ 'selected' if f.category == c }}>{{ c }}</option>{% endfor %}</select>
+  <select name="status"><option value="">All statuses</option>
+    {% for s in STATUSES %}<option {{ 'selected' if f.status == s }}>{{ s }}</option>{% endfor %}</select>
+  <button class="btn">Filter</button>
+  {% if request.url.query %}<a class="btn ghost" href="/assets">Clear</a>{% endif %}
+</form>
+
+<form method="get" action="/labels.pdf" target="_blank" id="bulk">
+<div class="card" style="padding:0">
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:30px"><input type="checkbox" id="all" style="width:auto"></th>
+      <th>Code</th><th>Category</th><th>Make / model</th><th>Serial no.</th><th>Assigned to</th><th>Location</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for a in rows %}
+      <tr>
+        <td><input type="checkbox" name="id" value="{{ a.id }}" class="pick" style="width:auto"></td>
+        <td><a class="mono" href="/assets/{{ a.id }}"><b>{{ a.asset_code }}</b></a><div class="muted" style="font-size:12px">{{ a.name or '' }}</div></td>
+        <td>{{ a.category }}</td>
+        <td>{{ a.make or '' }} {{ a.model or '' }}</td>
+        <td class="mono">{{ a.serial_no or '' }}</td>
+        <td>{{ a.assigned_to or '' }}<div class="muted" style="font-size:12px">{{ a.department or '' }}</div></td>
+        <td>{{ a.location or '' }}</td>
+        <td>{{ status_chip(a.status) }}</td>
+        <td><a class="btn sm ghost" target="_blank" href="/assets/{{ a.id }}/label.pdf">Label</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted" style="padding:24px;text-align:center">No assets found.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+<div class="sticky-actions" id="bulkbar">
+  <b id="cnt">0</b> selected ·
+  <select name="layout" style="width:auto"><option value="roll">Label printer — one 2×2 in label per page</option>
+    <option value="a4">A4 sheet — 15 labels per page with cut lines</option></select>
+  <button class="btn">Print labels</button>
+</div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+const picks = [...document.querySelectorAll('.pick')], bar = document.getElementById('bulkbar'), cnt = document.getElementById('cnt');
+function upd(){ const n = picks.filter(p => p.checked).length; cnt.textContent = n; bar.classList.toggle('show', n > 0); }
+picks.forEach(p => p.addEventListener('change', upd));
+document.getElementById('all').addEventListener('change', e => { picks.forEach(p => p.checked = e.target.checked); upd(); });
+</script>
+{% endblock %}

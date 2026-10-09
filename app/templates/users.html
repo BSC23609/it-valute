@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block body %}
+<div class="head"><div><h1>Users</h1><p class="sub" style="margin:0">Who can sign in and what they can see</p></div></div>
+<div class="grid g3">
+  <div class="card" style="padding:0"><div class="tablewrap"><table>
+    <thead><tr><th>Name</th><th>Role</th><th>Active</th><th>Reset password</th><th></th></tr></thead>
+    <tbody>
+    {% for u in rows %}
+      <tr>
+        <td><b>{{ u.name }}</b><div class="muted" style="font-size:12px">{{ u.email }}</div></td>
+        <td><select name="role" form="u{{ u.id }}">{% for k, d in ROLES.items() %}<option value="{{ k }}" {{ 'selected' if u.role == k }}>{{ k|upper }}</option>{% endfor %}</select></td>
+        <td><input type="checkbox" name="active" form="u{{ u.id }}" {{ 'checked' if u.active }} style="width:auto"></td>
+        <td><input type="password" name="password" form="u{{ u.id }}" placeholder="new password" autocomplete="new-password"></td>
+        <td><form method="post" action="/users/{{ u.id }}" id="u{{ u.id }}" style="margin:0"><button class="btn sm">Save</button></form></td>
+      </tr>
+    {% endfor %}
+    </tbody></table></div></div>
+  <div class="card">
+    <h2>Add user</h2>
+    <form method="post" action="/users/new" autocomplete="off">
+      <label class="f">Name</label><input name="name" required>
+      <div style="height:10px"></div><label class="f">Email</label><input name="email" type="email" required>
+      <div style="height:10px"></div><label class="f">Role</label>
+      <select name="role">{% for k, d in ROLES.items() %}<option value="{{ k }}" {{ 'selected' if k == 'viewer' }}>{{ d }}</option>{% endfor %}</select>
+      <div style="height:10px"></div><label class="f">Temporary password (min 8)</label><input name="password" type="password" minlength="8" required autocomplete="new-password">
+      <div style="height:14px"></div><button class="btn">Add user</button>
+    </form>
+    <p class="muted" style="font-size:12.5px;margin-top:14px">{% for k, d in ROLES.items() %}<b>{{ k|upper }}</b>: {{ d.split('—')[1] }}<br>{% endfor %}</p>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_macros.html" import dmy, when %}
+{% block body %}
+<div class="head">
+  <div><h1>{{ 'Edit: ' ~ v.title if v.id else 'New password' }}</h1>
+  <p class="sub" style="margin:0">{% if v.id %}Last changed {{ dmy(v.rotated_on) or 'never' }} · leave the password blank to keep the current one{% else %}Software logins, system/admin passwords, licence keys, Wi-Fi keys…{% endif %}</p></div>
+</div>
+{% if errors %}<div class="alert err">{{ errors|join(' · ') }}</div>{% endif %}
+<form method="post" class="card" autocomplete="off">
+  <div class="form">
+    <div><label class="f">Name *</label><input name="title" value="{{ v.title or '' }}" required placeholder="e.g. SAP B1 — manager login"></div>
+    <div><label class="f">Type *</label><select name="kind" required><option value="">Select type</option>
+      {% for k in VAULT_KINDS %}<option {{ 'selected' if v.kind == k }}>{{ k }}</option>{% endfor %}</select></div>
+    <div><label class="f">Company</label><select name="company"><option value="">Group / shared</option>
+      {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if v.company == k }}>{{ b.short }}</option>{% endfor %}</select></div>
+    <div><label class="f">URL / IP / host</label><input name="url_host" value="{{ v.url_host or '' }}" placeholder="https://… or 192.168.1.1"></div>
+    <div><label class="f">Username</label><input name="username" value="{{ v.username or '' }}" autocomplete="off"></div>
+    <div><label class="f">Password / key {{ '' if v.id else '' }}</label>
+      <div style="display:flex;gap:6px"><input name="secret" id="secret" type="password" autocomplete="new-password" placeholder="{{ 'unchanged' if v.id else '' }}">
+        <button type="button" class="btn sm ghost" id="toggle">Show</button>
+        <button type="button" class="btn sm ghost" id="gen" title="Generate a strong 16-character password">Generate</button></div></div>
+    <div><label class="f">Linked asset</label><select name="asset_id"><option value="">None</option>
+      {% for a in assets %}<option value="{{ a.id }}" {{ 'selected' if v.asset_id == a.id }}>{{ a.asset_code }} — {{ a.category }} {{ a.make or '' }} {{ a.model or '' }}</option>{% endfor %}</select></div>
+    <div class="full"><label class="f">Notes (encrypted — recovery codes, licence details, support contacts)</label>
+      <textarea name="notes" rows="4">{{ v.notes or '' }}</textarea></div>
+  </div>
+  <div class="actions" style="margin-top:18px">
+    <button class="btn">{{ 'Save changes' if v.id else 'Save password' }}</button>
+    <a class="btn ghost" href="/vault">Cancel</a>
+  </div>
+</form>
+{% if v.id and user.role == 'admin' %}
+<form method="post" action="/vault/{{ v.id }}/delete" onsubmit="return confirm('Delete this entry permanently?')">
+  <button class="btn danger">Delete entry</button></form>
+{% endif %}
+{% if history %}
+<div class="card" style="margin-top:18px"><h2>Access history</h2><ul class="history">
+  {% for h in history %}<li><b>{{ h.action }}</b> · {{ h.user_email }} · <span class="muted">{{ when(h.at) }}</span>{% if h.detail %} — {{ h.detail }}{% endif %}</li>{% endfor %}
+</ul></div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const s = document.getElementById('secret');
+document.getElementById('toggle').onclick = e => { s.type = s.type === 'password' ? 'text' : 'password'; e.target.textContent = s.type === 'password' ? 'Show' : 'Hide'; };
+document.getElementById('gen').onclick = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*-_=+';
+  const r = new Uint32Array(16); crypto.getRandomValues(r);
+  s.value = [...r].map(x => chars[x % chars.length]).join(''); s.type = 'text';
+  document.getElementById('toggle').textContent = 'Hide';
+};
+</script>
+{% endblock %}

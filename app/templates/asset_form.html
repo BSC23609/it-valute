@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block body %}
+{% set editing = a.id is defined and a.id %}
+<div class="head">
+  <div><h1>{{ 'Edit ' ~ a.asset_code if editing else 'New IT asset' }}</h1>
+  <p class="sub" style="margin:0">{{ 'Company is fixed because the asset code depends on it.' if editing else 'The asset code (e.g. BSC-IT-0001) is generated automatically when you save.' }}</p></div>
+</div>
+{% if errors %}<div class="alert err">{{ errors|join(' · ') }}</div>{% endif %}
+<form method="post" class="card">
+  <div class="form">
+  {% for col, label, kind in ASSET_FIELDS %}
+    <div class="{{ 'full' if kind == 'textarea' }}">
+      <label class="f">{{ label }}{% if col in ('company','category') %} *{% endif %}</label>
+      {% if kind == 'company' %}
+        <select name="company" required {{ 'disabled' if editing }}>
+          <option value="">Select company</option>
+          {% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if a.company == k }}>{{ b.name }}</option>{% endfor %}
+        </select>
+        {% if editing %}<input type="hidden" name="company" value="{{ a.company }}">{% endif %}
+      {% elif kind == 'category' %}
+        <select name="category" required><option value="">Select category</option>
+          {% for c in CATEGORIES %}<option {{ 'selected' if a.category == c }}>{{ c }}</option>{% endfor %}</select>
+      {% elif kind == 'status' %}
+        <select name="status">{% for s in STATUSES %}<option {{ 'selected' if a.status == s }}>{{ s }}</option>{% endfor %}</select>
+      {% elif kind == 'textarea' %}
+        <textarea name="{{ col }}" rows="3">{{ a[col] or '' }}</textarea>
+      {% elif kind == 'date' %}
+        <input type="date" name="{{ col }}" value="{{ a[col].isoformat() if a[col] else '' }}">
+      {% elif kind == 'number' %}
+        <input type="number" step="0.01" min="0" name="{{ col }}" value="{{ a[col] if a[col] is not none else '' }}">
+      {% else %}
+        <input name="{{ col }}" value="{{ a[col] or '' }}" {% if col in sugg %}list="dl-{{ col }}"{% endif %} autocomplete="off">
+      {% endif %}
+    </div>
+  {% endfor %}
+  </div>
+  {% for col, vals in sugg.items() %}<datalist id="dl-{{ col }}">{% for v in vals %}<option value="{{ v }}">{% endfor %}</datalist>{% endfor %}
+  <div class="actions" style="margin-top:18px">
+    <button class="btn">{{ 'Save changes' if editing else 'Create asset' }}</button>
+    <a class="btn ghost" href="{{ '/assets/%d'|format(a.id) if editing else '/assets' }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

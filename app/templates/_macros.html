@@ -1,0 +1,8 @@
+{% macro status_chip(s) -%}
+{% set cls = {'In use':'ok','In stock':'','Under repair':'warn','Retired':'grey','Lost / Disposed':'bad'} %}
+<span class="chip {{ cls.get(s, '') }}">{{ s }}</span>
+{%- endmacro %}
+
+{% macro dmy(d) -%}{{ d.strftime('%d-%m-%Y') if d else '' }}{%- endmacro %}
+
+{% macro when(t) -%}{{ t|local }}{%- endmacro %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_macros.html" import when %}
+{% block body %}
+<div class="head"><div><h1>Activity log</h1><p class="sub" style="margin:0">Latest 500 events · logins, edits, label prints, password reveals</p></div></div>
+<form class="filters" method="get">
+  <input name="q" value="{{ f.q or '' }}" placeholder="Search user or detail…" style="flex:1">
+  <select name="action"><option value="">All actions</option>
+    {% for a in ['login','login_failed','create','update','delete','reveal','print_label','export_assets','change_password'] %}
+    <option {{ 'selected' if f.action == a }}>{{ a }}</option>{% endfor %}</select>
+  <button class="btn">Filter</button>
+</form>
+<div class="card" style="padding:0"><div class="tablewrap"><table>
+  <thead><tr><th>When</th><th>User</th><th>Action</th><th>Item</th><th>Detail</th></tr></thead>
+  <tbody>{% for r in rows %}
+    <tr><td style="white-space:nowrap">{{ when(r.at) }}</td><td>{{ r.user_email }}</td>
+      <td><span class="chip {{ 'bad' if r.action in ('login_failed','delete') else ('warn' if r.action == 'reveal' else '') }}">{{ r.action }}</span></td>
+      <td>{% if r.entity == 'asset' and r.entity_id %}<a href="/assets/{{ r.entity_id }}">asset #{{ r.entity_id }}</a>
+          {% elif r.entity == 'vault' and r.entity_id %}<a href="/vault/{{ r.entity_id }}/edit">vault #{{ r.entity_id }}</a>
+          {% else %}{{ r.entity or '' }}{% endif %}</td>
+      <td style="white-space:pre-wrap;font-size:13px">{{ r.detail or '' }}</td></tr>
+  {% endfor %}</tbody>
+</table></div></div>
+{% endblock %}

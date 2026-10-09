@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>{% block title %}IT Assets & Vault{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if user %}
+<header class="top"><div class="wrap">
+  <a class="brand" href="/">IT Assets &amp; Vault</a>
+  {% set p = request.url.path %}
+  <nav>
+    <a href="/" class="{{ 'on' if p == '/' }}">Dashboard</a>
+    <a href="/assets" class="{{ 'on' if p.startswith('/assets') }}">Assets</a>
+    {% if user.role in ('admin','it') %}<a href="/vault" class="{{ 'on' if p.startswith('/vault') }}">Password vault</a>{% endif %}
+    {% if user.role == 'admin' %}
+      <a href="/users" class="{{ 'on' if p.startswith('/users') }}">Users</a>
+      <a href="/audit" class="{{ 'on' if p.startswith('/audit') }}">Activity log</a>
+    {% endif %}
+  </nav>
+  <div class="me"><a href="/account" style="color:#cdd8ee">{{ user.name }}</a>
+    <form method="post" action="/logout" style="margin:0"><button>Sign out</button></form></div>
+</div></header>
+{% endif %}
+<main class="wrap">
+  {% if msg %}<div class="alert ok">{{ msg }}</div>{% endif %}
+  {% if err %}<div class="alert err">{{ err }}</div>{% endif %}
+  {% block body %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

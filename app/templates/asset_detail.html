@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_chip, dmy, when %}
+{% block body %}
+<div class="head">
+  <div><h1 class="mono">{{ a.asset_code }} {{ status_chip(a.status) }}</h1>
+    <p class="sub" style="margin:0">{{ BRANDS[a.company].name if a.company in BRANDS else a.company }} · {{ a.category }}{% if a.name %} · {{ a.name }}{% endif %}</p></div>
+  <div class="actions">
+    {% if user.role in ('admin','it') %}<a class="btn ghost" href="/assets/{{ a.id }}/edit">Edit</a>{% endif %}
+    {% if user.role == 'admin' %}
+    <form method="post" action="/assets/{{ a.id }}/delete" onsubmit="return confirm('Delete {{ a.asset_code }} permanently? Consider marking it Retired instead.')" style="margin:0">
+      <button class="btn danger">Delete</button></form>{% endif %}
+  </div>
+</div>
+
+<div class="grid g3">
+  <div>
+    <div class="card">
+      <h2>Details</h2>
+      <dl class="kv">
+        {% for col, label, kind in ASSET_FIELDS if col not in ('company','category','status') %}
+          {% if a[col] is not none and a[col] != '' %}
+          <dt>{{ label }}</dt>
+          <dd class="{{ 'mono' if col in ('serial_no','ip_address','mac_address','hostname') }}" style="white-space:pre-wrap">{% if kind == 'date' %}{{ dmy(a[col]) }}{% elif kind == 'number' %}₹ {{ '{:,.2f}'.format(a[col]) }}{% else %}{{ a[col] }}{% endif %}</dd>
+          {% endif %}
+        {% endfor %}
+        <dt>Created</dt><dd>{{ when(a.created_at) }} by {{ a.created_by }}</dd>
+        <dt>Last updated</dt><dd>{{ when(a.updated_at) }} by {{ a.updated_by }}</dd>
+      </dl>
+    </div>
+
+    {% if user.role in ('admin','it') %}
+    <div class="card">
+      <div class="head" style="margin-bottom:8px"><h2 style="margin:0">Passwords for this asset</h2>
+        <a class="btn sm ghost" href="/vault/new?asset_id={{ a.id }}">+ Add password</a></div>
+      {% if linked %}<table>{% for v in linked %}
+        <tr><td><a href="/vault/{{ v.id }}/edit">{{ v.title }}</a></td><td class="muted">{{ v.kind }}</td><td class="mono">{{ v.username or '' }}</td>
+          <td><a href="/vault?q={{ a.asset_code }}">open in vault</a></td></tr>{% endfor %}</table>
+      {% else %}<p class="muted" style="margin:0">None linked (e.g. BIOS, admin login, router or NVR password).</p>{% endif %}
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <h2>History</h2>
+      <ul class="history">
+      {% for h in history %}
+        <li><b>{{ h.action|replace('_',' ') }}</b> · {{ h.user_email }} · <span class="muted">{{ when(h.at) }}</span>
+          {% if h.detail %}<div class="d">{{ h.detail }}</div>{% endif %}</li>
+      {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>QR label (2 × 2 in)</h2>
+      <div class="label-preview">{{ preview|safe }}</div>
+      <div class="actions" style="margin-top:12px">
+        <a class="btn" target="_blank" href="/assets/{{ a.id }}/label.pdf">Print label</a>
+        <a class="btn ghost" target="_blank" href="/assets/{{ a.id }}/label.pdf?layout=a4">On A4 sheet</a>
+      </div>
+      <p class="muted" style="font-size:12.5px;margin:10px 0 0">Print at <b>100% / Actual size</b> (not "Fit to page") so the label stays exactly 2 × 2 in.</p>
+    </div>
+    <div class="card">
+      <h2>What the QR shows when scanned</h2>
+      <pre class="qr">{{ qr }}</pre>
+    </div>
+  </div>
+</div>
+{% endblock %}

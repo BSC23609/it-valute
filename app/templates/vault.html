@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import dmy %}
+{% block body %}
+<div class="head">
+  <div><h1>Password vault</h1><p class="sub" style="margin:0">Encrypted at rest · every reveal is recorded in the activity log</p></div>
+  <a class="btn" href="/vault/new">+ New password</a>
+</div>
+<form class="filters" method="get">
+  <input name="q" value="{{ f.q or '' }}" placeholder="Search name, URL / host, username, asset code…" style="flex:1">
+  <select name="kind"><option value="">All types</option>{% for k in VAULT_KINDS %}<option {{ 'selected' if f.kind == k }}>{{ k }}</option>{% endfor %}</select>
+  <select name="company"><option value="">All companies</option>{% for k, b in BRANDS.items() %}<option value="{{ k }}" {{ 'selected' if f.company == k }}>{{ b.short }}</option>{% endfor %}</select>
+  <button class="btn">Filter</button>
+  {% if request.url.query %}<a class="btn ghost" href="/vault">Clear</a>{% endif %}
+</form>
+<div class="card" style="padding:0"><div class="tablewrap"><table>
+  <thead><tr><th>Name</th><th>Type</th><th>URL / host</th><th>Username</th><th>Password</th><th>Asset</th><th>Changed</th><th></th></tr></thead>
+  <tbody>
+  {% for v in rows %}
+    {% set old = (not v.rotated_on) or (today - v.rotated_on).days > 90 %}
+    <tr>
+      <td><b>{{ v.title }}</b>{% if v.company %}<div class="muted" style="font-size:12px">{{ BRANDS[v.company].short }}</div>{% endif %}</td>
+      <td>{{ v.kind }}</td>
+      <td style="max-width:220px;word-break:break-all">{% if v.url_host and v.url_host.startswith('http') %}<a href="{{ v.url_host }}" target="_blank" rel="noopener noreferrer">{{ v.url_host }}</a>{% else %}<span class="mono">{{ v.url_host or '' }}</span>{% endif %}</td>
+      <td><span class="mono">{{ v.username or '' }}</span>{% if v.username %} <button type="button" class="btn sm ghost" data-copy="{{ v.username }}">Copy</button>{% endif %}</td>
+      <td>{% if v.has_secret %}<span class="secret"><span class="val mono" id="s{{ v.id }}">••••••••</span>
+          <button type="button" class="btn sm ghost" data-reveal="{{ v.id }}">Show</button>
+          <button type="button" class="btn sm ghost" data-copysecret="{{ v.id }}">Copy</button></span>
+        {% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{% if v.asset_id %}<a class="mono" href="/assets/{{ v.asset_id }}">{{ v.asset_code }}</a>{% endif %}</td>
+      <td><span class="chip {{ 'warn' if old else 'ok' }}">{{ dmy(v.rotated_on) or 'never' }}</span></td>
+      <td><a class="btn sm ghost" href="/vault/{{ v.id }}/edit">Edit</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No passwords saved yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const timers = {};
+async function fetchSecret(id){
+  const r = await fetch(`/vault/${id}/reveal`, {method:'POST', headers:{'Accept':'application/json'}});
+  if(!r.ok){ alert('Could not load password'); return null; }
+  return (await r.json()).secret;
+}
+function flash(btn, t){ const o = btn.textContent; btn.textContent = t; setTimeout(()=>btn.textContent=o, 1200); }
+document.querySelectorAll('[data-reveal]').forEach(b => b.addEventListener('click', async () => {
+  const id = b.dataset.reveal, el = document.getElementById('s'+id);
+  if (b.textContent === 'Hide'){ el.textContent='••••••••'; b.textContent='Show'; clearTimeout(timers[id]); return; }
+  const s = await fetchSecret(id); if (s === null) return;
+  el.textContent = s; b.textContent = 'Hide';
+  timers[id] = setTimeout(()=>{ el.textContent='••••••••'; b.textContent='Show'; }, 30000);
+}));
+document.querySelectorAll('[data-copysecret]').forEach(b => b.addEventListener('click', async () => {
+  const s = await fetchSecret(b.dataset.copysecret); if (s === null) return;
+  await navigator.clipboard.writeText(s); flash(b, 'Copied');
+}));
+document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
+  await navigator.clipboard.writeText(b.dataset.copy); flash(b, 'Copied');
+}));
+</script>
+{% endblock %}

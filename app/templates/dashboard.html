@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_macros.html" import dmy, when %}
+{% block body %}
+<div class="head">
+  <div><h1>Dashboard</h1><p class="sub" style="margin:0">IT assets and credentials across Bharat Steel, Metfraa and Crayon</p></div>
+  {% if user.role in ('admin','it') %}
+  <div class="actions"><a class="btn" href="/assets/new">+ New asset</a><a class="btn ghost" href="/vault/new">+ New password</a></div>
+  {% endif %}
+</div>
+
+<div class="grid g4">
+  <a class="card stat" href="/assets"><div class="n">{{ stats.assets }}</div><div class="l">Active assets</div></a>
+  <a class="card stat" href="/assets?status=In+stock"><div class="n">{{ stats.in_stock }}</div><div class="l">In stock (spare)</div></a>
+  <a class="card stat" href="/assets?status=Under+repair"><div class="n">{{ stats.repair }}</div><div class="l">Under repair</div></a>
+  {% if user.role in ('admin','it') %}
+  <a class="card stat" href="/vault"><div class="n">{{ stats.vault }}</div><div class="l">Saved passwords</div></a>
+  {% endif %}
+</div>
+
+<div class="grid g2">
+  <div class="card">
+    <h2>Assets by company</h2>
+    {% set mx = (by_company|map(attribute='n')|max) if by_company else 1 %}
+    {% for r in by_company %}
+      <div class="bar" style="margin-bottom:8px"><a style="width:150px" href="/assets?company={{ r.company }}">{{ BRANDS[r.company].short if r.company in BRANDS else r.company }}</a>
+        <span><i style="width:{{ (100 * r.n / mx)|round }}%"></i></span><b style="width:36px;text-align:right">{{ r.n }}</b></div>
+    {% else %}<p class="muted">No assets yet.</p>{% endfor %}
+    <h2 style="margin-top:20px">By category</h2>
+    {% set mx2 = (by_category|map(attribute='n')|max) if by_category else 1 %}
+    {% for r in by_category %}
+      <div class="bar" style="margin-bottom:6px"><a style="width:150px" href="/assets?category={{ r.category|urlencode }}">{{ r.category }}</a>
+        <span><i style="width:{{ (100 * r.n / mx2)|round }}%"></i></span><b style="width:36px;text-align:right">{{ r.n }}</b></div>
+    {% endfor %}
+  </div>
+  <div>
+    <div class="card">
+      <h2>Warranty ending in 60 days</h2>
+      {% if warranty %}<table>{% for a in warranty %}
+        <tr><td><a href="/assets/{{ a.id }}" class="mono">{{ a.asset_code }}</a></td><td>{{ a.category }} · {{ a.make or '' }} {{ a.model or '' }}</td><td>{{ dmy(a.warranty_end) }}</td></tr>
+      {% endfor %}</table>{% else %}<p class="muted">Nothing due.</p>{% endif %}
+    </div>
+    {% if user.role in ('admin','it') %}
+    <div class="card">
+      <h2>Passwords not changed in 90+ days</h2>
+      {% if stale %}<table>{% for v in stale %}
+        <tr><td><a href="/vault/{{ v.id }}/edit">{{ v.title }}</a></td><td class="muted">{{ v.kind }}</td><td>{{ dmy(v.rotated_on) or 'never' }}</td></tr>
+      {% endfor %}</table>{% else %}<p class="muted">All passwords are recent.</p>{% endif %}
+    </div>
+    {% endif %}
+    <div class="card">
+      <h2>Recent asset activity</h2>
+      {% for r in recent %}<div style="margin-bottom:6px"><span class="muted">{{ when(r.at) }}</span> · {{ r.user_email }} · <a href="/assets/{{ r.entity_id }}">{{ r.action }}</a> <span class="muted">{{ (r.detail or '').split('\n')[0][:80] }}</span></div>
+      {% else %}<p class="muted">No activity yet.</p>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

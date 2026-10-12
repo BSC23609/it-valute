@@ -527,6 +527,7 @@ _COLMAP = {
               "ssid", "wifi name", "wi-fi name", "network name", "device", "site", "particulars", "purpose",
               "service", "module", "location", "company name"],
 }
+_GUIDE_SHEETS = ("how to use", "instructions", "read me", "readme")  # template help sheets, never imported
 _SERIAL_COLS = {"sno", "slno", "srno", "serialno", "#", "no", "sl", "s"}
 
 
@@ -615,7 +616,7 @@ async def vault_import(request: Request, user=Depends(can_edit), conn=Depends(ge
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
             for ws in wb.worksheets:
-                if ws.sheet_state != "visible":
+                if ws.sheet_state != "visible" or _norm(ws.title).startswith(_GUIDE_SHEETS):
                     continue
                 sheets.append((ws.title.strip()[:80], [tuple(r) for r in ws.iter_rows(values_only=True)]))
         else:

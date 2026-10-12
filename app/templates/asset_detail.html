@@ -53,10 +53,14 @@
   <div>
     <div class="card">
       <h2>QR label (2 × 2 in)</h2>
+      <div class="seg" role="group" aria-label="Label style">
+        <a href="?style=logo" class="{{ 'on' if style != 'classic' }}" {% if style != 'classic' %}aria-current="true"{% endif %}>Logo in QR</a>
+        <a href="?style=classic" class="{{ 'on' if style == 'classic' }}" {% if style == 'classic' %}aria-current="true"{% endif %}>Logo on top</a>
+      </div>
       <div class="label-preview">{{ preview|safe }}</div>
       <div class="actions" style="margin-top:12px">
-        <a class="btn" target="_blank" href="/assets/{{ a.id }}/label.pdf">Print label</a>
-        <a class="btn ghost" target="_blank" href="/assets/{{ a.id }}/label.pdf?layout=a4">On A4 sheet</a>
+        <a class="btn" target="_blank" href="/assets/{{ a.id }}/label.pdf?style={{ style }}">Print label</a>
+        <a class="btn ghost" target="_blank" href="/assets/{{ a.id }}/label.pdf?layout=a4&style={{ style }}">On A4 sheet</a>
       </div>
       <p class="muted" style="font-size:12.5px;margin:10px 0 0">Print at <b>100% / Actual size</b> (not "Fit to page") so the label stays exactly 2 × 2 in.</p>
     </div>

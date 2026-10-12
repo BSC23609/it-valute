@@ -1,34 +1,44 @@
-"""2 x 2 inch branded QR labels as print-ready PDF.
+"""2 x 2 inch branded QR labels as print-ready PDF, plus an on-screen SVG preview.
 
-Two layouts:
-  * "roll"  — one 2x2 in page per label (thermal / label printers)
-  * "a4"    — 2x2 in labels on A4 sheets (3 x 5 = 15 per sheet) with cut marks
+Two label styles:
+  * "logo"    (default) — company symbol in the centre of the QR code, company
+                name and asset code underneath
+  * "classic" — company logo across the top, QR below, asset code at the bottom
+
+Two page layouts:
+  * "roll" — one 2x2 in page per label (thermal / label printers)
+  * "a4"   — 2x2 in labels on A4 sheets (3 x 5 = 15 per sheet) with cut lines
+
 The QR encodes the asset details as plain text, so any phone camera shows them
 offline. Passwords are never put on a label.
 """
+import base64
 import io
 import os
+from html import escape
 
 import segno
-from reportlab.lib.colors import HexColor, white
+from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 from .config import BRANDS, LABEL_CONTACT
 
 BRAND_DIR = os.path.join(os.path.dirname(__file__), "static", "brand")
-SIZE = 2 * inch
+SIZE = 2 * inch            # 144 pt
+STYLES = ("logo", "classic")
+
+# Keep the QR coarse enough to scan when printed at 203 dpi (common thermal
+# printers): at most version 9 (53 modules) at error level Q, which leaves room
+# for a logo in the centre.
+MAX_QR_VERSION = 9
 
 
 def _fmt_date(d):
     return d.strftime("%d-%m-%Y") if d else ""
-
-
-# The QR must stay small enough to scan when printed at 203 dpi (common thermal
-# label printers): at most version 9 (53 modules) => ~5 printer dots per module.
-MAX_QR_VERSION = 9
 
 
 def _clip(v, n=32):
@@ -57,166 +67,172 @@ def _qr_lines(a, drop=()):
 
 
 # Least important lines are dropped first if the text is too long for a scannable code.
-_DROP_ORDER = ["contact", "Purchased", "Dept", "Make/Model", "Location"]
+_DROP_ORDER = ["contact", "Purchased", "Dept", "Make/Model", "Location", "User", "Warranty"]
 
 
 def qr_text(a) -> str:
     drop = []
     text = _qr_lines(a)
     for key in _DROP_ORDER:
-        if segno.make(text, error="l", micro=False, boost_error=False).version <= MAX_QR_VERSION:
+        if segno.make(text, error="q", micro=False, boost_error=False).version <= MAX_QR_VERSION:
             break
         drop.append(key)
         text = _qr_lines(a, drop)
     return text
 
 
-def _make_qr(text: str):
+def _make_qr(text: str, with_logo: bool):
+    # Q (25 % recovery) leaves plenty of margin for the logo in the centre.
+    if with_logo:
+        # Prefer H (30 % recovery) when the text is short enough, else Q (25 %).
+        qr = segno.make(text, error="h", micro=False, boost_error=False)
+        return qr if qr.version <= MAX_QR_VERSION else segno.make(text, error="q", micro=False, boost_error=False)
     qr = segno.make(text, error="m", micro=False, boost_error=False)
     if qr.version > MAX_QR_VERSION:
         qr = segno.make(text, error="l", micro=False, boost_error=False)
     return qr
 
 
-def _fit_text(c, text, font, size, max_w, min_size=4.5):
-    while size > min_size and c.stringWidth(text, font, size) > max_w:
+def _fit(text, font, size, max_w, min_size=4.5):
+    while size > min_size and stringWidth(text, font, size) > max_w:
         size -= 0.25
-    while c.stringWidth(text, font, size) > max_w and len(text) > 3:
+    while stringWidth(text, font, size) > max_w and len(text) > 3:
         text = text[:-2] + "…"
     return text, size
 
 
-def _draw_label(c, a, ox=0.0, oy=0.0):
-    """Draw one 2x2 in label with its bottom-left corner at (ox, oy)."""
-    brand = BRANDS.get(a["company"], {"name": a["company"], "short": a["company"], "color": "#0A2B66", "logo": ""})
-    navy = HexColor(brand["color"])
-    pad = 0.08 * inch
+def _brand(a):
+    return BRANDS.get(a["company"], {"name": a["company"], "short": a["company"], "color": "#0A2B66",
+                                     "logo": "", "mark": "", "label_name": str(a["company"]).upper()})
+
+
+def _img(name):
+    path = os.path.join(BRAND_DIR, name or "")
+    return path if name and os.path.isfile(path) else None
+
+
+def _desc(a):
+    mm = " ".join(y for y in [a.get("make"), a.get("model")] if y)
+    return " · ".join(x for x in [a.get("category"), mm] if x)
+
+
+# ---------------------------------------------------------------- layout
+# All drawing is described once as a list of operations in top-left
+# coordinates (points, 144 = 2 in), then rendered to PDF or SVG.
+def _layout(a, style="logo"):
+    style = style if style in STYLES else "logo"
+    b = _brand(a)
+    navy = b["color"]
+    S, pad = SIZE, 0.08 * inch
+    ops = [("rect", 0, 0, S, S, "#FFFFFF", 0)]
+    mark = _img(b.get("mark")) if style == "logo" else None
+
+    if style == "logo":
+        qs, qy = 98.0, 8.5
+        qr = _make_qr(qr_text(a), with_logo=bool(mark))
+        ops.append(("qr", (S - qs) / 2, qy, qs, [list(r) for r in qr.matrix]))
+        if mark:
+            # Logo window snapped to whole modules, odd count so it stays centred,
+            # about 21 % of the width (~4.5 % of the area) — well inside level-Q recovery.
+            n = len(qr.matrix)
+            mods = max(5, round(n * 0.21))
+            mods += (mods % 2 == 0) and (n % 2 == 1)
+            m = qs / n
+            box = mods * m
+            bx, by = (S - box) / 2, qy + (qs - box) / 2
+            ops.append(("rect", bx, by, box, box, "#FFFFFF", 0))
+            iw, ih = ImageReader(mark).getSize()
+            inner = box - 2
+            sc = min(inner / iw, inner / ih)
+            w, h = iw * sc, ih * sc
+            ops.append(("img", mark, (S - w) / 2, by + (box - h) / 2, w, h))
+        name, nsz = _fit(b.get("label_name") or b["name"].upper(), "Helvetica-Bold", 7, S - 2 * pad)
+        ops.append(("text", S / 2, qy + qs + 9.0, name, "Helvetica-Bold", nsz, navy))
+        code, csz = _fit(a["asset_code"], "Helvetica-Bold", 10.5, S - 2 * pad)
+        ops.append(("text", S / 2, qy + qs + 22.0, code, "Helvetica-Bold", csz, navy))
+        d = _desc(a)
+        if d:
+            d, dsz = _fit(d, "Helvetica", 5.6, S - 2 * pad)
+            ops.append(("text", S / 2, qy + qs + 31.5, d, "Helvetica", dsz, "#333333"))
+        return ops
+
+    # classic
     top_h = 0.30 * inch
-
-    c.saveState()
-    c.setFillColor(white)
-    c.rect(ox, oy, SIZE, SIZE, stroke=0, fill=1)
-
-    # --- brand band: logo (or company short name) + navy rule ---
-    logo_path = os.path.join(BRAND_DIR, brand.get("logo") or "")
-    band_y = oy + SIZE - top_h
-    if brand.get("logo") and os.path.isfile(logo_path):
-        img = ImageReader(logo_path)
-        iw, ih = img.getSize()
-        max_w, max_h = SIZE - 2 * pad, top_h - 0.09 * inch
-        scale = min(max_w / iw, max_h / ih)
-        w, h = iw * scale, ih * scale
-        c.drawImage(img, ox + (SIZE - w) / 2, band_y + (top_h - h) / 2 + 0.01 * inch, w, h, mask="auto")
+    logo = _img(b.get("logo"))
+    if logo:
+        iw, ih = ImageReader(logo).getSize()
+        sc = min((S - 2 * pad) / iw, (top_h - 0.09 * inch) / ih)
+        w, h = iw * sc, ih * sc
+        ops.append(("img", logo, (S - w) / 2, (top_h - h) / 2 - 0.01 * inch, w, h))
     else:
-        text, size = _fit_text(c, brand["short"], "Helvetica-Bold", 10, SIZE - 2 * pad)
-        c.setFont("Helvetica-Bold", size)
-        c.setFillColor(navy)
-        c.drawCentredString(ox + SIZE / 2, band_y + top_h / 2 - size * 0.35, text)
-    c.setStrokeColor(navy)
-    c.setLineWidth(1.2)
-    c.line(ox + pad, band_y, ox + SIZE - pad, band_y)
+        t, sz = _fit(b["short"], "Helvetica-Bold", 10, S - 2 * pad)
+        ops.append(("text", S / 2, top_h / 2 + sz * 0.35, t, "Helvetica-Bold", sz, navy))
+    ops.append(("line", pad, top_h, S - pad, top_h, navy, 1.2))
+    qs = 1.26 * inch
+    qr = _make_qr(qr_text(a), with_logo=False)
+    ops.append(("qr", (S - qs) / 2, top_h + 0.075 * inch, qs, [list(r) for r in qr.matrix]))
+    code, csz = _fit(a["asset_code"], "Helvetica-Bold", 10, S - 2 * pad)
+    ops.append(("text", S / 2, S - 0.175 * inch, code, "Helvetica-Bold", csz, navy))
+    d = _desc(a)
+    if d:
+        d, dsz = _fit(d, "Helvetica", 6, S - 2 * pad)
+        ops.append(("text", S / 2, S - 0.07 * inch, d, "Helvetica", dsz, "#333333"))
+    return ops
 
-    # --- QR code (vector, one rect per run of dark modules) ---
-    qr = _make_qr(qr_text(a))
-    matrix = [list(r) for r in qr.matrix]
+
+def _runs(matrix):
+    """Yield (row, start_col, length) for each horizontal run of dark modules."""
     n = len(matrix)
-    qr_size = 1.26 * inch
-    m = qr_size / n
-    qx = ox + (SIZE - qr_size) / 2
-    qy_top = band_y - 0.075 * inch
-    c.setFillColorRGB(0, 0, 0)
     for r, row in enumerate(matrix):
-        y = qy_top - (r + 1) * m
-        col = 0
-        while col < n:
-            if row[col]:
-                start = col
-                while col < n and row[col]:
-                    col += 1
-                c.rect(qx + start * m, y, (col - start) * m + 0.01, m + 0.01, stroke=0, fill=1)
+        c = 0
+        while c < n:
+            if row[c]:
+                s = c
+                while c < n and row[c]:
+                    c += 1
+                yield r, s, c - s
             else:
-                col += 1
+                c += 1
 
-    # --- asset code + short description ---
-    c.setFillColor(navy)
-    code, size = _fit_text(c, a["asset_code"], "Helvetica-Bold", 10, SIZE - 2 * pad)
-    c.setFont("Helvetica-Bold", size)
-    c.drawCentredString(ox + SIZE / 2, oy + 0.175 * inch, code)
-    desc = " · ".join(x for x in [a.get("category"), " ".join(y for y in [a.get("make"), a.get("model")] if y)] if x)
-    if desc:
-        c.setFillColorRGB(0.2, 0.2, 0.2)
-        desc, dsize = _fit_text(c, desc, "Helvetica", 6, SIZE - 2 * pad)
-        c.setFont("Helvetica", dsize)
-        c.drawCentredString(ox + SIZE / 2, oy + 0.07 * inch, desc)
+
+# ---------------------------------------------------------------- PDF
+def _draw_label(c, a, ox=0.0, oy=0.0, style="logo"):
+    """Draw one label with its bottom-left corner at (ox, oy)."""
+    S = SIZE
+    Y = lambda y: oy + S - y           # top-left → PDF coordinates
+    c.saveState()
+    for op in _layout(a, style):
+        kind = op[0]
+        if kind == "rect":
+            _, x, y, w, h, fill, rad = op
+            c.setFillColor(HexColor(fill))
+            if rad:
+                c.roundRect(ox + x, Y(y + h), w, h, rad, stroke=0, fill=1)
+            else:
+                c.rect(ox + x, Y(y + h), w, h, stroke=0, fill=1)
+        elif kind == "qr":
+            _, x, y, size, matrix = op
+            m = size / len(matrix)
+            c.setFillColorRGB(0, 0, 0)
+            for r, s, ln in _runs(matrix):
+                c.rect(ox + x + s * m, Y(y + (r + 1) * m), ln * m + 0.01, m + 0.01, stroke=0, fill=1)
+        elif kind == "img":
+            _, path, x, y, w, h = op
+            c.drawImage(ImageReader(path), ox + x, Y(y + h), w, h, mask="auto")
+        elif kind == "line":
+            _, x1, y1, x2, y2, col, lw = op
+            c.setStrokeColor(HexColor(col))
+            c.setLineWidth(lw)
+            c.line(ox + x1, Y(y1), ox + x2, Y(y2))
+        elif kind == "text":
+            _, x, y, t, font, size, col = op
+            c.setFillColor(HexColor(col))
+            c.setFont(font, size)
+            c.drawCentredString(ox + x, Y(y), t)
     c.restoreState()
 
 
-def label_preview_svg(a) -> str:
-    """On-screen preview drawn with the same geometry as the PDF (units = points, 144 = 2 in)."""
-    from html import escape
-    import base64
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-
-    brand = BRANDS.get(a["company"], {"name": a["company"], "short": a["company"], "color": "#0A2B66", "logo": ""})
-    navy = brand["color"]
-    S, pad, top_h = 144.0, 0.08 * 72, 0.30 * 72
-    band = top_h  # y of rule line from top
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {S:g} {S:g}" role="img" aria-label="Label preview">',
-           f'<rect width="{S:g}" height="{S:g}" fill="#fff"/>']
-
-    def fit(text, font, size, max_w, min_size=4.5):
-        while size > min_size and stringWidth(text, font, size) > max_w:
-            size -= 0.25
-        while stringWidth(text, font, size) > max_w and len(text) > 3:
-            text = text[:-2] + "…"
-        return text, size
-
-    logo_path = os.path.join(BRAND_DIR, brand.get("logo") or "")
-    if brand.get("logo") and os.path.isfile(logo_path):
-        iw, ih = ImageReader(logo_path).getSize()
-        scale = min((S - 2 * pad) / iw, (top_h - 0.09 * 72) / ih)
-        w, h = iw * scale, ih * scale
-        data = base64.b64encode(open(logo_path, "rb").read()).decode()
-        out.append(f'<image href="data:image/png;base64,{data}" x="{(S - w) / 2:.2f}" '
-                   f'y="{(top_h - h) / 2 - 0.01 * 72:.2f}" width="{w:.2f}" height="{h:.2f}"/>')
-    else:
-        t, size = fit(brand["short"], "Helvetica-Bold", 10, S - 2 * pad)
-        out.append(f'<text x="{S / 2}" y="{top_h / 2 + size * 0.35:.2f}" text-anchor="middle" '
-                   f'font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="{size}" fill="{navy}">{escape(t)}</text>')
-    out.append(f'<line x1="{pad}" y1="{band}" x2="{S - pad}" y2="{band}" stroke="{navy}" stroke-width="1.2"/>')
-
-    qr = _make_qr(qr_text(a))
-    matrix = [list(r) for r in qr.matrix]
-    n = len(matrix)
-    qs = 1.26 * 72
-    m = qs / n
-    qx, qy = (S - qs) / 2, band + 0.075 * 72
-    path = []
-    for r, row in enumerate(matrix):
-        col = 0
-        while col < n:
-            if row[col]:
-                start = col
-                while col < n and row[col]:
-                    col += 1
-                path.append(f"M{qx + start * m:.3f} {qy + r * m:.3f}h{(col - start) * m:.3f}v{m:.3f}h{-(col - start) * m:.3f}z")
-            else:
-                col += 1
-    out.append(f'<path d="{"".join(path)}" fill="#000" shape-rendering="crispEdges"/>')
-
-    code, size = fit(a["asset_code"], "Helvetica-Bold", 10, S - 2 * pad)
-    out.append(f'<text x="{S / 2}" y="{S - 0.175 * 72:.2f}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" '
-               f'font-weight="700" font-size="{size}" fill="{navy}">{escape(code)}</text>')
-    desc = " · ".join(x for x in [a.get("category"), " ".join(y for y in [a.get("make"), a.get("model")] if y)] if x)
-    if desc:
-        desc, dsize = fit(desc, "Helvetica", 6, S - 2 * pad)
-        out.append(f'<text x="{S / 2}" y="{S - 0.07 * 72:.2f}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" '
-                   f'font-size="{dsize}" fill="#333">{escape(desc)}</text>')
-    out.append("</svg>")
-    return "".join(out)
-
-
-def labels_pdf(assets, layout: str = "roll") -> bytes:
+def labels_pdf(assets, layout: str = "roll", style: str = "logo") -> bytes:
     buf = io.BytesIO()
     if layout == "a4":
         pw, ph = A4
@@ -231,9 +247,8 @@ def labels_pdf(assets, layout: str = "roll") -> bytes:
                 c.showPage()
             col, row = k % cols, k // cols
             ox, oy = mx + col * SIZE, ph - my - (row + 1) * SIZE
-            _draw_label(c, a, ox, oy)
-            # thin grey cut lines
-            c.setStrokeColorRGB(0.75, 0.75, 0.75)
+            _draw_label(c, a, ox, oy, style)
+            c.setStrokeColorRGB(0.75, 0.75, 0.75)       # thin grey cut lines
             c.setLineWidth(0.3)
             c.rect(ox, oy, SIZE, SIZE, stroke=1, fill=0)
     else:
@@ -241,7 +256,38 @@ def labels_pdf(assets, layout: str = "roll") -> bytes:
         for i, a in enumerate(assets):
             if i:
                 c.showPage()
-            _draw_label(c, a)
+            _draw_label(c, a, style=style)
     c.setTitle("IT asset labels")
     c.save()
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------- SVG preview
+def label_preview_svg(a, style: str = "logo") -> str:
+    S = SIZE
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {S:g} {S:g}" role="img" aria-label="Label preview">']
+    font = 'font-family="Helvetica, Arial, sans-serif"'
+    for op in _layout(a, style):
+        kind = op[0]
+        if kind == "rect":
+            _, x, y, w, h, fill, rad = op
+            out.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{rad}" fill="{fill}"/>')
+        elif kind == "qr":
+            _, x, y, size, matrix = op
+            m = size / len(matrix)
+            d = "".join(f"M{x + s * m:.3f} {y + r * m:.3f}h{ln * m:.3f}v{m:.3f}h{-ln * m:.3f}z"
+                        for r, s, ln in _runs(matrix))
+            out.append(f'<path d="{d}" fill="#000" shape-rendering="crispEdges"/>')
+        elif kind == "img":
+            _, path, x, y, w, h = op
+            data = base64.b64encode(open(path, "rb").read()).decode()
+            out.append(f'<image href="data:image/png;base64,{data}" x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}"/>')
+        elif kind == "line":
+            _, x1, y1, x2, y2, col, lw = op
+            out.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" stroke="{col}" stroke-width="{lw}"/>')
+        elif kind == "text":
+            _, x, y, t, f, size, col = op
+            weight = ' font-weight="700"' if "Bold" in f else ""
+            out.append(f'<text x="{x:.2f}" y="{y:.2f}" text-anchor="middle" {font}{weight} font-size="{size}" fill="{col}">{escape(t)}</text>')
+    out.append("</svg>")
+    return "".join(out)

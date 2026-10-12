@@ -14,6 +14,17 @@ BRANDS = {
         "prefix": "BSC",          # asset codes: BSC-IT-0001
         "color": "#0A2B66",
         "logo": "bsc.png",
+        "mark": "mark_bsc.png",
+        "label_name": "BHARAT STEEL (CHENNAI) PVT. LTD.",
+    },
+    "G2": {
+        "name": "G2 Steel Services Pvt. Ltd.",
+        "short": "G2 STEEL",
+        "prefix": "G2S",          # asset codes: G2S-IT-0001
+        "color": "#0A2B66",
+        "logo": "g2.png",
+        "mark": "mark_g2.png",
+        "label_name": "G2 STEEL SERVICES PVT. LTD.",
     },
     "METFRAA": {
         "name": "Metfraa Steel Buildings Pvt. Ltd.",
@@ -21,6 +32,8 @@ BRANDS = {
         "prefix": "MET",
         "color": "#0A2B66",
         "logo": "metfraa.png",
+        "mark": "mark_metfraa.png",
+        "label_name": "METFRAA STEEL BUILDINGS PVT. LTD.",
     },
     "CRAYON": {
         "name": "Crayon Roofings & Structures",
@@ -28,6 +41,17 @@ BRANDS = {
         "prefix": "CRS",
         "color": "#002654",
         "logo": "crayon.png",
+        "mark": "mark_crayon.png",
+        "label_name": "CRAYON ROOFINGS & STRUCTURES",
+    },
+    "GROUP": {
+        "name": "The Bharat Steel Group",
+        "short": "BHARAT STEEL GROUP",
+        "prefix": "BSG",          # shared / group-level assets: BSG-IT-0001
+        "color": "#0A2B66",
+        "logo": "group.png",
+        "mark": "",
+        "label_name": "THE BHARAT STEEL GROUP",
     },
 }
 

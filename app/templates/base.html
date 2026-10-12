@@ -8,14 +8,31 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=6">
+<style>
+  /* Kept in the page so the sidebar logo is always sized correctly */
+  .side .side-brand { display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+                      padding: 6px 10px 22px; margin: 0; text-decoration: none; }
+  .side .side-brand > .mark, .side .side-brand > .logo-card { display: none !important; }
+  .side .side-logo { display: block; width: 100%; max-width: 176px; height: auto; }
+  .side .app-name { display: block; color: #C9D6EE; font-size: 13px; font-weight: 500; letter-spacing: .01em; }
+  .seg { display: inline-flex; border: 1px solid #C3CCD8; border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
+  .seg a { padding: 6px 12px; font-size: 13.5px; font-weight: 500; color: #0A2B66; background: #fff; text-decoration: none; }
+  .seg a + a { border-left: 1px solid #C3CCD8; }
+  .seg a.on { background: #0A2B66; color: #fff; }
+  @media (max-width: 900px) {
+    .side .side-brand { flex-direction: row; align-items: center; padding: 0 8px 0 0; }
+    .side .side-logo { width: auto; height: 30px; max-width: none; }
+    .side .app-name { display: none; }
+  }
+</style>
 </head>
 <body class="{{ 'has-nav' if user else 'no-nav' }}">
 {% if user %}
 {% set p = request.url.path %}
 <aside class="side">
   <a class="side-brand" href="/">
-    <span class="logo-card"><img src="/static/brand/group.png" alt="The Bharat Steel Group"></span>
+    <img class="side-logo" src="/static/brand/group_white.png" alt="The Bharat Steel Group">
     <span class="app-name">IT Assets &amp; Vault</span>
   </a>
   <nav class="side-nav" aria-label="Main">

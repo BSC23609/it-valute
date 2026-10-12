@@ -4,7 +4,7 @@
 <header class="page-head">
   <div>
     <h1>Password vault</h1>
-    <p class="sub">{{ total }} saved in {{ groups|length }} group{{ '' if groups|length == 1 else 's' }}. Passwords stay hidden until you show them, and every view is logged.</p>
+    <p class="sub">{% if total %}{{ total }} password{{ '' if total == 1 else 's' }} in {{ groups|length }} group{{ '' if groups|length == 1 else 's' }}. {% endif %}Passwords stay hidden until you show them, and every view is logged.</p>
   </div>
   <div class="actions">
     <a class="btn" href="/vault/new{{ '?g=' ~ group|urlencode if group and not q }}">+ New password</a>

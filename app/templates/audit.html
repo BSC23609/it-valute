@@ -5,7 +5,7 @@
 <form class="filters" method="get">
   <input name="q" value="{{ f.q or '' }}" placeholder="Search user or detail…" style="flex:1">
   <select name="action"><option value="">All actions</option>
-    {% for a in ['login','login_failed','create','update','delete','reveal','print_label','export_assets','change_password'] %}
+    {% for a in ['login','login_failed','create','update','delete','reveal','print_label','export_assets','change_password','import','setup'] %}
     <option {{ 'selected' if f.action == a }}>{{ a }}</option>{% endfor %}</select>
   <button class="btn">Filter</button>
 </form>

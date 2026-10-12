@@ -182,3 +182,41 @@ pre.qr { background: var(--field); border: 1px solid var(--line); border-radius:
 /* asset code as page title */
 h1.mono { font: 600 24px/1.2 var(--mono); letter-spacing: .01em; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 h1.mono .chip { font-family: var(--sans); font-size: 13px; }
+
+/* vault group tabs — one per Excel sheet */
+.tabs { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 14px; margin-bottom: 4px; scrollbar-width: thin; }
+.tab { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; padding: 9px 14px; border-radius: var(--r);
+       background: var(--paper); border: 1px solid var(--line); color: var(--ink); font-weight: 500; font-size: 14.5px; }
+.tab:hover { border-color: #9DAABD; text-decoration: none; }
+.tab .count { font: 500 12px var(--mono); background: var(--line-soft); color: var(--slate); padding: 2px 7px; border-radius: 99px; }
+.tab.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+.tab.on .count { background: rgba(255,255,255,.18); color: #fff; }
+.table-card { padding: 0; overflow: hidden; }
+.table-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.table-bar h2 { margin: 0; }
+.copyable { display: inline-flex; align-items: center; gap: 4px; }
+.icon-btn { background: none; border: 1px solid transparent; border-radius: var(--r-sm); padding: 2px 6px; cursor: pointer;
+            color: var(--slate); font-size: 14px; line-height: 1.4; }
+.icon-btn:hover { border-color: var(--line); background: var(--field); color: var(--navy); }
+.secret-val { min-width: 9ch; display: inline-block; }
+.notes-cell { white-space: pre-wrap; font-size: 13.5px; max-width: 260px; }
+td.wrap { word-break: break-all; max-width: 240px; }
+.small { font-size: 13px; }
+.empty { padding: 32px; }
+.empty .actions { margin-top: 14px; }
+
+/* logos */
+.side-brand { flex-direction: column; align-items: stretch; gap: 10px; padding: 2px 4px 22px; }
+.logo-card { background: #fff; border-radius: 10px; padding: 10px 12px; display: block; }
+.logo-card img { display: block; width: 100%; height: auto; max-height: 52px; object-fit: contain; }
+.app-name { font-weight: 600; font-size: 15px; color: #fff; padding-left: 4px; }
+.login-logo { display: block; width: 190px; height: auto; margin-bottom: 22px; }
+.no-nav .login::before { content: none; }
+a.co { width: 150px; flex: none; display: flex; align-items: center; }
+a.co img { max-width: 140px; max-height: 30px; width: auto; height: auto; object-fit: contain; }
+@media (max-width: 900px) {
+  .side-brand { flex-direction: row; padding: 0 6px 0 0; }
+  .logo-card { padding: 4px 6px; border-radius: 6px; }
+  .logo-card img { max-height: 30px; width: auto; }
+  .app-name { display: none; }
+}

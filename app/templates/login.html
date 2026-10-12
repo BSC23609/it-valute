@@ -1,18 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Sign in · IT Assets & Vault{% endblock %}
 {% block body %}
+<style>
+  /* Login page styling kept here so it works whichever style.css is deployed */
+  .no-nav .login::before { content: none !important; display: none !important; }
+  .login { max-width: 400px; margin: 9vh auto; padding: 32px 32px 28px; text-align: left; }
+  .login .login-logo { display: block; width: 200px; max-width: 70%; height: auto; margin: 0 auto 22px; }
+  .login h1 { font-size: 22px; margin: 0; text-align: center; }
+  .login .sub { margin: 6px 0 24px; text-align: center; }
+  .login label.f { margin-bottom: 6px; }
+</style>
 <div class="login card">
   <img class="login-logo" src="/static/brand/group.png" alt="The Bharat Steel Group">
   <h1>IT Assets &amp; Vault</h1>
   <p class="sub">Sign in with your work email.</p>
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{ next }}">
-    <label class="f">Email</label>
-    <input name="email" type="email" required autofocus autocomplete="username">
-    <div style="height:12px"></div>
-    <label class="f">Password</label>
-    <input name="password" type="password" required autocomplete="current-password">
-    <div style="height:16px"></div>
+    <label class="f" for="email">Email</label>
+    <input id="email" name="email" type="email" required autofocus autocomplete="username">
+    <div style="height:14px"></div>
+    <label class="f" for="password">Password</label>
+    <input id="password" name="password" type="password" required autocomplete="current-password">
+    <div style="height:20px"></div>
     <button class="btn" style="width:100%;justify-content:center">Sign in</button>
   </form>
 </div>

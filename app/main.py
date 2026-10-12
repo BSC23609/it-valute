@@ -403,7 +403,7 @@ def asset_detail(aid: int, request: Request, user=Depends(current_user), conn=De
         linked = conn.execute("SELECT id, title, kind, username FROM vault WHERE asset_id=%s ORDER BY title",
                               (aid,)).fetchall()
     return render(request, "asset_detail.html", user, a=a, history=history, linked=linked, qr=qr_text(a),
-                  preview=label_preview_svg(a))
+                  preview=label_preview_svg(a, _label_style(request)), style=_label_style(request))
 
 
 @app.get("/assets/{aid}/edit", response_class=HTMLResponse)
@@ -445,12 +445,16 @@ def asset_delete(aid: int, user=Depends(admin_only), conn=Depends(get_conn)):
     return back("/assets", msg=f"{a['asset_code']} deleted.")
 
 
+def _label_style(request):
+    return "classic" if request.query_params.get("style") == "classic" else "logo"
+
+
 @app.get("/assets/{aid}/label.pdf")
 def asset_label(aid: int, request: Request, user=Depends(current_user), conn=Depends(get_conn)):
     a = _get_asset(conn, aid)
     layout = "a4" if request.query_params.get("layout") == "a4" else "roll"
-    audit(conn, user["email"], "print_label", "asset", aid, f"Label ({layout})")
-    return Response(labels_pdf([a], layout), media_type="application/pdf",
+    audit(conn, user["email"], "print_label", "asset", aid, f"Label ({layout}, {_label_style(request)})")
+    return Response(labels_pdf([a], layout, _label_style(request)), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{a["asset_code"]}-label.pdf"'})
 
 
@@ -463,29 +467,52 @@ def bulk_labels(request: Request, user=Depends(current_user), conn=Depends(get_c
     layout = "a4" if request.query_params.get("layout") == "a4" else "roll"
     for r in rows:
         audit(conn, user["email"], "print_label", "asset", r["id"], f"Label ({layout}, bulk)")
-    return Response(labels_pdf(rows, layout), media_type="application/pdf",
+    return Response(labels_pdf(rows, layout, _label_style(request)), media_type="application/pdf",
                     headers={"Content-Disposition": 'inline; filename="asset-labels.pdf"'})
 
 
 # ---------------------------------------------------------------- password vault
+def _vault_groups(conn):
+    return conn.execute("SELECT kind AS name, count(*) AS n FROM vault GROUP BY kind ORDER BY lower(kind)").fetchall()
+
+
 @app.get("/vault", response_class=HTMLResponse)
 def vault_list(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
     p = request.query_params
+    groups = _vault_groups(conn)
+    group = p.get("g") or ""
+    q = (p.get("q") or "").strip()
     where, args = [], []
-    if p.get("q"):
-        like = f"%{p['q'].strip()}%"
-        where.append("(v.title ILIKE %s OR v.url_host ILIKE %s OR v.username ILIKE %s OR a.asset_code ILIKE %s)")
-        args += [like] * 4
-    for col in ("kind", "company"):
-        if p.get(col):
-            where.append(f"v.{col} = %s")
-            args.append(p[col])
+    if q:
+        like = f"%{q}%"
+        where.append("(v.title ILIKE %s OR v.url_host ILIKE %s OR v.username ILIKE %s OR a.asset_code ILIKE %s "
+                     "OR v.kind ILIKE %s)")
+        args += [like] * 5
+    elif group:
+        where.append("v.kind = %s")
+        args.append(group)
+    elif groups:
+        group = groups[0]["name"]          # open the first group by default
+        where.append("v.kind = %s")
+        args.append(group)
     sql = ("SELECT v.id, v.title, v.kind, v.company, v.url_host, v.username, v.rotated_on, v.updated_at, "
-           "v.secret_enc IS NOT NULL AS has_secret, a.id AS asset_id, a.asset_code "
+           "v.secret_enc IS NOT NULL AS has_secret, v.notes_enc IS NOT NULL AS has_notes, "
+           "a.id AS asset_id, a.asset_code "
            "FROM vault v LEFT JOIN assets a ON a.id = v.asset_id "
-           + ("WHERE " + " AND ".join(where) if where else "") + " ORDER BY v.title")
+           + ("WHERE " + " AND ".join(where) if where else "") + " ORDER BY lower(v.title), v.id")
     rows = conn.execute(sql, args).fetchall()
-    return render(request, "vault.html", user, rows=rows, f=p, today=dt.date.today())
+    return render(request, "vault.html", user, rows=rows, groups=groups, group=group, q=q,
+                  total=sum(g["n"] for g in groups), today=dt.date.today())
+
+
+@app.post("/vault/reveal-group")
+async def vault_reveal_group(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
+    form = await request.form()
+    group = (form.get("g") or "").strip()
+    rows = conn.execute("SELECT id, secret_enc, notes_enc FROM vault WHERE kind=%s", (group,)).fetchall()
+    audit(conn, user["email"], "reveal", "vault", None, f"Viewed all {len(rows)} passwords in group '{group}'")
+    return JSONResponse({str(r["id"]): {"s": sec.decrypt(r["secret_enc"]), "n": sec.decrypt(r["notes_enc"])}
+                         for r in rows}, headers={"Cache-Control": "no-store"})
 
 
 def _asset_options(conn):
@@ -495,9 +522,15 @@ def _asset_options(conn):
 @app.get("/vault/new", response_class=HTMLResponse)
 def vault_new(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
     aid = request.query_params.get("asset_id")
-    v = {"id": None, "title": "", "kind": "", "company": "", "url_host": "", "username": "",
-         "notes": "", "asset_id": int(aid) if aid and aid.isdigit() else None, "rotated_on": None}
-    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[])
+    v = {"id": None, "title": "", "kind": request.query_params.get("g", ""), "company": "", "url_host": "",
+         "username": "", "notes": "", "asset_id": int(aid) if aid and aid.isdigit() else None, "rotated_on": None}
+    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[],
+                  group_names=_group_names(conn))
+
+
+def _group_names(conn):
+    names = [g["name"] for g in _vault_groups(conn)]
+    return names + [k for k in VAULT_KINDS if k not in names]
 
 
 def _clean_vault_form(form):
@@ -506,8 +539,10 @@ def _clean_vault_form(form):
     errors = []
     if not data["title"]:
         errors.append("Title is required")
-    if data["kind"] not in VAULT_KINDS:
-        errors.append("Type is required")
+    if not data["kind"]:
+        errors.append("Group is required (e.g. SAP credentials, Wi-Fi credentials)")
+    elif len(data["kind"]) > 80:
+        errors.append("Group name is too long")
     if data["company"] and data["company"] not in BRANDS:
         data["company"] = None
     return data, errors
@@ -519,7 +554,7 @@ async def vault_create(request: Request, user=Depends(can_edit), conn=Depends(ge
     data, errors = _clean_vault_form(form)
     if errors:
         data.update(id=None, notes=form.get("notes", ""), rotated_on=None)
-        return render(request, "vault_form.html", user, v=data, assets=_asset_options(conn), errors=errors)
+        return render(request, "vault_form.html", user, group_names=_group_names(conn), v=data, assets=_asset_options(conn), errors=errors)
     secret = form.get("secret") or ""
     row = conn.execute(
         "INSERT INTO vault (title, kind, company, url_host, username, secret_enc, notes_enc, asset_id, rotated_on, "
@@ -528,7 +563,7 @@ async def vault_create(request: Request, user=Depends(can_edit), conn=Depends(ge
          sec.encrypt(form.get("notes") or ""), data["asset_id"], dt.date.today() if secret else None,
          user["email"], user["email"])).fetchone()
     audit(conn, user["email"], "create", "vault", row["id"], f"Created entry '{data['title']}'")
-    return back("/vault", msg=f"Saved '{data['title']}'.")
+    return back(f"/vault?g={quote(data['kind'])}", msg=f"Saved '{data['title']}'.")
 
 
 def _get_vault(conn, vid):
@@ -544,7 +579,8 @@ def vault_edit(vid: int, request: Request, user=Depends(can_edit), conn=Depends(
     v["notes"] = sec.decrypt(v["notes_enc"])
     hist = conn.execute("SELECT * FROM audit WHERE entity='vault' AND entity_id=%s ORDER BY at DESC LIMIT 50",
                         (vid,)).fetchall()
-    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[], history=hist)
+    return render(request, "vault_form.html", user, v=v, assets=_asset_options(conn), errors=[], history=hist,
+                  group_names=_group_names(conn))
 
 
 @app.post("/vault/{vid}/edit")
@@ -554,7 +590,7 @@ async def vault_update(vid: int, request: Request, user=Depends(can_edit), conn=
     data, errors = _clean_vault_form(form)
     if errors:
         data.update(id=vid, notes=form.get("notes", ""), rotated_on=old["rotated_on"])
-        return render(request, "vault_form.html", user, v=data, assets=_asset_options(conn), errors=errors)
+        return render(request, "vault_form.html", user, group_names=_group_names(conn), v=data, assets=_asset_options(conn), errors=errors)
     secret = form.get("secret") or ""
     changed = [k for k in ("title", "kind", "company", "url_host", "username", "asset_id") if old[k] != data[k]]
     if (form.get("notes") or "") != sec.decrypt(old["notes_enc"]):
@@ -566,13 +602,13 @@ async def vault_update(vid: int, request: Request, user=Depends(can_edit), conn=
             rotated = dt.date.today()
         secret_enc = sec.encrypt(secret)
     if not changed:
-        return back("/vault", msg="No changes.")
+        return back(f"/vault?g={quote(data['kind'] or '')}", msg="No changes.")
     conn.execute("UPDATE vault SET title=%s, kind=%s, company=%s, url_host=%s, username=%s, secret_enc=%s, "
                  "notes_enc=%s, asset_id=%s, rotated_on=%s, updated_by=%s, updated_at=now() WHERE id=%s",
                  (data["title"], data["kind"], data["company"], data["url_host"], data["username"], secret_enc,
                   sec.encrypt(form.get("notes") or ""), data["asset_id"], rotated, user["email"], vid))
     audit(conn, user["email"], "update", "vault", vid, "Changed: " + ", ".join(changed))
-    return back("/vault", msg=f"Updated '{data['title']}'.")
+    return back(f"/vault?g={quote(data['kind'])}", msg=f"Updated '{data['title']}'.")
 
 
 @app.post("/vault/{vid}/reveal")
@@ -587,7 +623,7 @@ def vault_delete(vid: int, user=Depends(admin_only), conn=Depends(get_conn)):
     v = _get_vault(conn, vid)
     conn.execute("DELETE FROM vault WHERE id=%s", (vid,))
     audit(conn, user["email"], "delete", "vault", vid, f"Deleted entry '{v['title']}'")
-    return back("/vault", msg=f"Deleted '{v['title']}'.")
+    return back(f"/vault?g={quote(v['kind'])}", msg=f"Deleted '{v['title']}'.")
 
 
 # ---------------------------------------------------------------- users & audit

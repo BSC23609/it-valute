@@ -7,6 +7,7 @@
     <p class="sub">{% if total %}{{ total }} password{{ '' if total == 1 else 's' }} in {{ groups|length }} group{{ '' if groups|length == 1 else 's' }}. {% endif %}Passwords stay hidden until you show them, and every view is logged.</p>
   </div>
   <div class="actions">
+    <a class="btn ghost" href="/vault/import">Import from Excel</a>
     <a class="btn" href="/vault/new{{ '?g=' ~ group|urlencode if group and not q }}">+ New password</a>
   </div>
 </header>
@@ -29,8 +30,8 @@
 {% if not groups %}
   <div class="card empty">
     <h2>No passwords yet</h2>
-    <p class="muted">Add your first password and give it a group, such as “SAP credentials” or “Wi-Fi credentials”. Each group becomes a tab here.</p>
-    <div class="actions"><a class="btn" href="/vault/new">+ New password</a></div>
+    <p class="muted">Add passwords one by one, or import your Excel file: each sheet (SAP credentials, Wi-Fi credentials and so on) becomes a tab here.</p>
+    <div class="actions"><a class="btn" href="/vault/new">+ New password</a><a class="btn ghost" href="/vault/import">Import from Excel</a></div>
   </div>
 {% else %}
 <div class="card table-card">

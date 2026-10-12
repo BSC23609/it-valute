@@ -515,6 +515,138 @@ async def vault_reveal_group(request: Request, user=Depends(can_edit), conn=Depe
                          for r in rows}, headers={"Cache-Control": "no-store"})
 
 
+# ---- Excel / CSV import: every sheet becomes a group (tab) ----
+_COLMAP = {
+    "secret": ["password", "passwd", "pwd", "pass", "passcode", "pass code", "pin", "key", "wifi password",
+               "wi-fi password", "licence key", "license key", "product key", "security key"],
+    "username": ["username", "user name", "user id", "userid", "user", "login", "login id", "login name",
+                 "mail id", "email id", "email", "e-mail", "mail", "account id"],
+    "url_host": ["url", "link", "website", "web site", "portal", "ip address", "ip", "host", "hostname",
+                 "server", "address", "domain"],
+    "title": ["name", "title", "description", "system", "software", "application", "app", "account",
+              "ssid", "wifi name", "wi-fi name", "network name", "device", "site", "particulars", "purpose",
+              "service", "module", "location", "company name"],
+}
+_SERIAL_COLS = {"sno", "slno", "srno", "serialno", "#", "no", "sl", "s"}
+
+
+def _norm(h):
+    return " ".join(str(h or "").strip().lower().replace("_", " ").replace(".", " ").split())
+
+
+def _map_header(cells):
+    """Return ({field: column_index}, [(column_index, label) for other columns]) for a header row."""
+    mapping, taken = {}, set()
+    norm = [_norm(c) for c in cells]
+    for field in ("secret", "username", "url_host", "title"):
+        for syn in _COLMAP[field]:                       # exact header match first
+            hit = next((i for i, h in enumerate(norm) if i not in taken and h == syn), None)
+            if hit is not None:
+                mapping[field] = hit
+                taken.add(hit)
+                break
+        if field not in mapping:                          # then "contains" match
+            hit = next((i for i, h in enumerate(norm) if i not in taken and h
+                        and any(syn in h for syn in _COLMAP[field] if len(syn) > 3)), None)
+            if hit is not None:
+                mapping[field] = hit
+                taken.add(hit)
+    others = [(i, str(cells[i]).strip()) for i, h in enumerate(norm)
+              if h and i not in taken and h.replace(" ", "") not in _SERIAL_COLS]
+    return mapping, others
+
+
+def _cell(v):
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if isinstance(v, (dt.datetime, dt.date)):
+        return v.strftime("%d-%m-%Y")
+    return str(v).strip()
+
+
+def _parse_sheet(name, rows):
+    """Find the header row in the first 15 rows and return entry dicts (or a reason it was skipped)."""
+    rows = [r for r in rows if r is not None]
+    header_i, mapping, others = None, {}, []
+    for i, r in enumerate(rows[:15]):
+        m, o = _map_header(list(r))
+        if "secret" in m or len(m) >= 2:
+            header_i, mapping, others = i, m, o
+            break
+    if header_i is None:
+        return [], "no header row with a Password or Username column found"
+    out = []
+    for n, r in enumerate(rows[header_i + 1:], start=header_i + 2):
+        r = list(r) + [None] * 50
+        get = lambda f: _cell(r[mapping[f]]) if f in mapping else ""
+        title, user_, secret, host = get("title"), get("username"), get("secret"), get("url_host")
+        extra = [f"{label}: {_cell(r[i])}" for i, label in others if _cell(r[i])]
+        if not (title or user_ or secret or host):
+            continue
+        if not title:
+            title = extra[0].split(": ", 1)[1] if extra else (user_ or host or f"{name} row {n}")
+        out.append({"title": title[:200], "username": user_[:200] or None, "secret": secret,
+                    "url_host": host[:300] or None, "notes": "\n".join(extra)})
+    return out, None
+
+
+@app.get("/vault/import", response_class=HTMLResponse)
+def vault_import_page(request: Request, user=Depends(can_edit)):
+    return render(request, "vault_import.html", user, result=None)
+
+
+@app.post("/vault/import", response_class=HTMLResponse)
+async def vault_import(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
+    form = await request.form()
+    up = form.get("file")
+    company = form.get("company") if form.get("company") in BRANDS else None
+    if not up or not getattr(up, "filename", ""):
+        return render(request, "vault_import.html", user, result=None, error="Choose an Excel (.xlsx) or CSV file.")
+    data = await up.read()
+    fname = os.path.basename(up.filename)
+    sheets = []
+    try:
+        if fname.lower().endswith(".csv"):
+            text = data.decode("utf-8-sig", errors="replace")
+            sheets.append((os.path.splitext(fname)[0], list(csv.reader(io.StringIO(text)))))
+        elif fname.lower().endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                if ws.sheet_state != "visible":
+                    continue
+                sheets.append((ws.title.strip()[:80], [tuple(r) for r in ws.iter_rows(values_only=True)]))
+        else:
+            return render(request, "vault_import.html", user, result=None,
+                          error="Only .xlsx or .csv files can be imported. In Excel use File → Save As → Excel Workbook (.xlsx).")
+    except Exception as exc:
+        return render(request, "vault_import.html", user, result=None, error=f"Could not read the file: {exc}")
+
+    result = []
+    for name, rows in sheets:
+        entries, problem = _parse_sheet(name, rows)
+        added = skipped = 0
+        for e in entries:
+            dup = conn.execute("SELECT 1 FROM vault WHERE kind=%s AND title=%s AND coalesce(username,'')=%s",
+                               (name, e["title"], e["username"] or "")).fetchone()
+            if dup:
+                skipped += 1
+                continue
+            conn.execute(
+                "INSERT INTO vault (title, kind, company, url_host, username, secret_enc, notes_enc, rotated_on, "
+                "created_by, updated_by) VALUES (%s,%s,%s,%s,%s,%s,%s,NULL,%s,%s)",
+                (e["title"], name, company, e["url_host"], e["username"], sec.encrypt(e["secret"]),
+                 sec.encrypt(e["notes"]), user["email"], user["email"]))
+            added += 1
+        result.append({"name": name, "added": added, "skipped": skipped, "problem": problem})
+    total = sum(r["added"] for r in result)
+    audit(conn, user["email"], "import", "vault", None,
+          f"Imported {total} entries from '{fname}': " + ", ".join(f"{r['name']} ({r['added']})" for r in result))
+    return render(request, "vault_import.html", user, result=result, total=total, fname=fname)
+
+
 def _asset_options(conn):
     return conn.execute("SELECT id, asset_code, category, make, model FROM assets ORDER BY asset_code").fetchall()
 

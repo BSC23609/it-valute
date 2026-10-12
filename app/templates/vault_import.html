@@ -4,7 +4,7 @@
   <div>
     <a class="crumb" href="/vault">Password vault</a>
     <h1>Import from Excel</h1>
-    <p class="sub">Each sheet in your workbook becomes a group in the vault — for example “SAP credentials” or “Wi-Fi credentials”. Passwords are encrypted as they are saved.</p>
+    <p class="sub">Each sheet in your workbook becomes a group in the vault, for example “SAP credentials” or “Wi-Fi credentials”. Passwords are encrypted as they are saved.</p>
   </div>
 </header>
 
@@ -23,7 +23,7 @@
     {% endfor %}
     </tbody>
   </table></div>
-  <p class="muted small" style="margin:14px 0 0">Importing the same file again won’t create duplicates — rows with the same group, name and username are skipped. After checking the vault, delete or lock away the Excel file: it holds the passwords in plain text.</p>
+  <p class="muted small" style="margin:14px 0 0">Importing the same file again won’t create duplicates: rows with the same group, name and username are skipped. After checking the vault, delete or lock away the Excel file, because it holds the passwords in plain text.</p>
 </div>
 {% endif %}
 

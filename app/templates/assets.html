@@ -5,7 +5,7 @@
   <div><h1>IT assets</h1><p class="sub" style="margin:0">{{ rows|length }} shown · tick assets to print labels in bulk</p></div>
   <div class="actions">
     <a class="btn ghost" href="/assets/export.csv?{{ request.url.query }}">Export CSV</a>
-    {% if user.role in ('admin','it') %}<a class="btn" href="/assets/new">+ New asset</a>{% endif %}
+    {% if user.role in ('admin','it') %}<a class="btn ghost" href="/assets/import">Import from Excel</a><a class="btn" href="/assets/new">+ New asset</a>{% endif %}
   </div>
 </div>
 

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <a class="crumb" href="/assets">Assets</a>
+    <h1>Import assets from Excel</h1>
+    <p class="sub">Upload your asset register. Each sheet is read separately, and every row becomes an asset with its own code (BSC-IT-0001, MET-IT-0001 and so on), ready for a QR label.</p>
+  </div>
+</header>
+
+{% if error %}<div class="alert err" role="alert">{{ error }}</div>{% endif %}
+
+{% if result %}
+<div class="card">
+  <h2>Imported {{ total }} asset{{ '' if total == 1 else 's' }} from {{ fname }}</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Sheet</th><th>Company</th><th>Added</th><th>Already in the app (skipped)</th><th>New codes</th><th></th></tr></thead>
+    <tbody>
+    {% for r in result %}
+      <tr><td><b>{{ r.name }}</b>{% if r.problem %}<div class="muted small">Not imported: {{ r.problem }}</div>{% endif %}</td>
+        <td>{{ r.company }}</td><td>{{ r.added }}</td><td>{{ r.skipped }}</td>
+        <td><span class="mono small">{{ r.codes }}</span></td>
+        <td>{% if r.key and (r.added or r.skipped) %}<a class="btn sm ghost" href="/assets?company={{ r.key }}">Open</a>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="muted small" style="margin:14px 0 0">Importing the same file again won’t create duplicates: rows already in the app (same type, brand, model, serial number, user, computer name and location) are skipped, while identical rows in one file, such as three of the same switch, are all kept. To print labels, open Assets, tick the assets and choose Print labels.</p>
+</div>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" class="sheet">
+  <section class="group">
+    <div class="group-head"><h2>Workbook</h2><p>.xlsx or .csv. Hidden sheets are left out.</p></div>
+    <div class="fields">
+      <div class="fld wide"><label for="file">Excel file</label>
+        <input id="file" type="file" name="file" accept=".xlsx,.xlsm,.csv" required></div>
+      <div class="fld"><label for="company">Company</label>
+        <select id="company" name="company"><option value="">Detect from sheet name (recommended)</option>
+          {% for k, b in BRANDS.items() %}<option value="{{ k }}">All sheets: {{ b.name }}</option>{% endfor %}</select></div>
+    </div>
+  </section>
+  <section class="group">
+    <div class="group-head"><h2>How sheets are read</h2><p>The first row with column titles is used as the header.</p></div>
+    <div class="fields">
+      <div class="fld wide">
+        <dl class="kv">
+          <dt>Company</dt><dd>From the sheet name: “Bharat Steel …” → Bharat Steel (Chennai), “Metfraa …” → Metfraa, “Crayon …” → Crayon Roofings, “G2 …” → G2 Steel</dd>
+          <dt>Category</dt><dd>From Asset type / Device type: desktop, N-Computing, laptop, switch, router, firewall, access point, NVR and so on. Printer sheets become Printer / Scanner.</dd>
+          <dt>Specs</dt><dd>Processor, RAM and Hard disk / SSD are joined into one line</dd>
+          <dt>Status</dt><dd>Active → In use · Inactive or Spare → In stock · Damage or Faulty → Under repair</dd>
+          <dt>Other columns</dt><dd>Brand, Model, Serial number, Operating system, Computer name, User name, Department, Location and Remarks go into the matching fields. “N/A” and “Not visible” are left blank.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+  <div class="savebar">
+    <a class="btn ghost" href="/assets">Cancel</a>
+    <button class="btn">Import</button>
+  </div>
+</form>
+{% endblock %}

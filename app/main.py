@@ -364,6 +364,77 @@ def asset_export(request: Request, user=Depends(current_user), conn=Depends(get_
                     headers={"Content-Disposition": f'attachment; filename="it-assets-{dt.date.today()}.csv"'})
 
 
+@app.get("/assets/import", response_class=HTMLResponse)
+def asset_import_page(request: Request, user=Depends(can_edit)):
+    return render(request, "asset_import.html", user, result=None)
+
+
+@app.post("/assets/import", response_class=HTMLResponse)
+async def asset_import(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
+    from . import asset_import as ai
+    form = await request.form()
+    up = form.get("file")
+    forced = form.get("company") if form.get("company") in BRANDS else None
+    if not up or not getattr(up, "filename", ""):
+        return render(request, "asset_import.html", user, result=None, error="Choose an Excel (.xlsx) file.")
+    fname = os.path.basename(up.filename)
+    data = await up.read()
+    sheets = []
+    try:
+        if fname.lower().endswith(".csv"):
+            text = data.decode("utf-8-sig", errors="replace")
+            sheets.append((os.path.splitext(fname)[0], list(csv.reader(io.StringIO(text)))))
+        elif fname.lower().endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                if ws.sheet_state == "visible" and not _norm(ws.title).startswith(_GUIDE_SHEETS):
+                    sheets.append((ws.title.strip(), [tuple(r) for r in ws.iter_rows(values_only=True)]))
+        else:
+            return render(request, "asset_import.html", user, result=None,
+                          error="Only .xlsx or .csv files can be imported. In Excel use File → Save As → Excel Workbook (.xlsx).")
+    except Exception as exc:
+        return render(request, "asset_import.html", user, result=None, error=f"Could not read the file: {exc}")
+
+    cols = ["asset_code"] + ASSET_COLS + ["created_by", "updated_by"]
+    key_cols = ("category", "make", "model", "serial_no", "assigned_to", "hostname", "location")
+    existing, seen, result = {}, {}, []
+    for title, rows in sheets:
+        company = forced or ai.company_for_sheet(title)
+        items, problem = ai.parse_sheet(title, rows)
+        if not company and not problem:
+            problem = "couldn't tell the company from the sheet name — choose a company above and import again"
+            items = []
+        added = skipped = 0
+        first = last = None
+        for a in items:
+            a["company"] = company
+            # Identical rows can be real separate devices (e.g. three D-Link switches with no visible serial),
+            # so a row is skipped only when the app already holds as many matching assets as the file has so far.
+            key = (company,) + tuple(a[c] for c in key_cols)
+            seen[key] = seen.get(key, 0) + 1
+            if key not in existing:
+                where = " AND ".join(f"{c} IS NOT DISTINCT FROM %s" for c in key_cols)
+                existing[key] = conn.execute(f"SELECT count(*) AS n FROM assets WHERE company=%s AND {where}",
+                                             list(key)).fetchone()["n"]
+            if seen[key] <= existing[key]:
+                skipped += 1
+                continue
+            code = next_asset_code(conn, BRANDS[company]["prefix"])
+            conn.execute(f"INSERT INTO assets ({','.join(cols)}) VALUES ({','.join(['%s'] * len(cols))})",
+                         [code] + [a.get(c) for c in ASSET_COLS] + [user["email"], user["email"]])
+            first = first or code
+            last = code
+            added += 1
+        result.append({"name": title, "company": BRANDS[company]["name"] if company else "—", "key": company,
+                       "added": added, "skipped": skipped, "problem": problem,
+                       "codes": f"{first} – {last}" if first and first != last else (first or "")})
+    total = sum(r["added"] for r in result)
+    audit(conn, user["email"], "import", "asset", None,
+          f"Imported {total} assets from '{fname}': " + ", ".join(f"{r['name']} ({r['added']})" for r in result))
+    return render(request, "asset_import.html", user, result=result, total=total, fname=fname)
+
+
 @app.get("/assets/new", response_class=HTMLResponse)
 def asset_new(request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
     blank = {c: None for c in ASSET_COLS}

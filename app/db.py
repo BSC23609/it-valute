@@ -66,6 +66,21 @@ CREATE TABLE IF NOT EXISTS vault (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS asset_files (
+    id           SERIAL PRIMARY KEY,
+    asset_id     INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL DEFAULT 'invoice',
+    filename     TEXT NOT NULL,
+    content_type TEXT,
+    size         INTEGER,
+    data         BYTEA,
+    onedrive_url TEXT,
+    onedrive_note TEXT,
+    uploaded_by  TEXT,
+    uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS asset_files_asset_idx ON asset_files(asset_id);
+
 CREATE TABLE IF NOT EXISTS audit (
     id         BIGSERIAL PRIMARY KEY,
     at         TIMESTAMPTZ NOT NULL DEFAULT now(),

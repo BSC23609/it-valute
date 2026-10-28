@@ -1,8 +1,47 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_chip %}
+{% from "_macros.html" import status_chip, dmy %}
 {% block body %}
+<style>
+  /* Asset list: the table scrolls inside its own box, so the filters and column titles stay in view */
+  .list-card { padding: 0 !important; overflow: visible !important; }
+  /* the column titles stay pinned to the top of the window while you scroll the page */
+  .asset-scroll thead th { position: sticky; top: 0; z-index: 5; background: #F4F6F9; box-shadow: inset 0 -1px 0 var(--line); }
+  .asset-scroll thead th:first-child { border-top-left-radius: var(--r-lg); }
+  .asset-scroll thead th:last-child { border-top-right-radius: var(--r-lg); }
+  .asset-scroll th, .asset-scroll td { padding: 7px 7px; font-size: 13.5px; vertical-align: middle; }
+  .asset-scroll th:first-child, .asset-scroll td:first-child { padding-left: 14px; }
+  .asset-scroll td.mm { min-width: 130px; max-width: 190px; }
+  .asset-scroll .btn.sm { padding: 4px 9px; }
+  .asset-scroll .sub2 { font-size: 12px; color: #6B7A90; }
+  .asset-scroll .nowrap { white-space: nowrap; }
+  .row-actions { display: flex; gap: 5px; align-items: center; white-space: nowrap; }
+  .row-actions .btn { text-align: center; justify-content: center; }
+  .btn.sm.danger-ghost { color: #B42318; border-color: #F1C9C4; background: #fff; }
+  .btn.sm.danger-ghost:hover { background: #FDF0EE; }
+  .pdate { width: 124px; padding: 4px 5px; font-size: 12.5px; }
+  .pdate.saved { border-color: #2E7D4F; background: #EEF8F1; }
+  .inv-link { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; white-space: nowrap; }
+  .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; padding: 10px 14px;
+           border-top: 1px solid var(--line); font-size: 13.5px; }
+  .pager .pg { display: flex; gap: 4px; flex-wrap: wrap; }
+  .pager .pg a, .pager .pg span { min-width: 32px; padding: 5px 9px; border: 1px solid #C3CCD8; border-radius: 7px; text-align: center;
+           color: #0A2B66; text-decoration: none; background: #fff; }
+  .pager .pg span.on { background: #0A2B66; color: #fff; border-color: #0A2B66; }
+  .pager .pg span.gap { border: 0; background: none; min-width: 0; padding: 5px 2px; }
+  .pager select { width: auto; padding: 5px 8px; }
+  .jump { position: fixed; right: 18px; bottom: 16px; display: flex; gap: 2px; z-index: 30; background: #0A2B66; border-radius: 999px;
+          padding: 3px; box-shadow: 0 4px 14px rgba(10,43,102,.28); transition: bottom .2s; }
+  .jump.up { bottom: 78px; }
+  .jump button { height: 34px; padding: 0 12px; border-radius: 999px; border: 0; background: transparent; color: #fff; font-size: 13px;
+                 font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .jump button:hover { background: #1D4A94; }
+  .jump button:focus-visible { outline: 3px solid #E3A21A; outline-offset: 2px; }
+  @media (max-width: 1100px) { .asset-scroll { overflow-x: auto; } .asset-scroll thead th { position: static; } }
+</style>
+
 <div class="head">
-  <div><h1>IT assets</h1><p class="sub" style="margin:0">{{ rows|length }} shown · tick assets to print labels in bulk</p></div>
+  <div><h1>IT assets</h1>
+    <p class="sub" style="margin:0">{% if per and total > per %}Showing {{ first }}–{{ first + rows|length - 1 }} of {{ total }}{% else %}{{ total }} shown{% endif %} · tick assets to print labels in bulk</p></div>
   <div class="actions">
     <a class="btn ghost" href="/assets/export.csv?{{ request.url.query }}">Export CSV</a>
     {% if user.role in ('admin','it') %}<a class="btn ghost" href="/assets/import">Import from Excel</a><a class="btn" href="/assets/new">+ New asset</a>{% endif %}
@@ -17,33 +56,63 @@
     {% for c in CATEGORIES %}<option {{ 'selected' if f.category == c }}>{{ c }}</option>{% endfor %}</select>
   <select name="status"><option value="">All statuses</option>
     {% for s in STATUSES %}<option {{ 'selected' if f.status == s }}>{{ s }}</option>{% endfor %}</select>
+  {% if f.per %}<input type="hidden" name="per" value="{{ f.per }}">{% endif %}
   <button class="btn">Filter</button>
   {% if request.url.query %}<a class="btn ghost" href="/assets">Clear</a>{% endif %}
 </form>
 
+{% set here = request.url.path ~ ('?' ~ request.url.query if request.url.query else '') %}
 <form method="get" action="/labels.pdf" target="_blank" id="bulk">
-<div class="card" style="padding:0">
-  <div class="tablewrap"><table>
-    <thead><tr><th style="width:30px"><input type="checkbox" id="all" style="width:auto"></th>
-      <th>Code</th><th>Category</th><th>Make / model</th><th>Serial no.</th><th>Assigned to</th><th>Location</th><th>Status</th><th></th></tr></thead>
+<div class="card list-card">
+  <div class="asset-scroll" id="scrollbox">
+  <table>
+    <thead><tr><th style="width:30px"><input type="checkbox" id="all" style="width:auto" aria-label="Select all"></th>
+      <th>Code</th><th>Make / model</th><th>Serial no.</th><th>Assigned to / location</th>
+      <th>Status</th><th>Purchase date</th><th>Invoice</th><th></th></tr></thead>
     <tbody>
     {% for a in rows %}
       <tr>
-        <td><input type="checkbox" name="id" value="{{ a.id }}" class="pick" style="width:auto"></td>
-        <td><a class="mono" href="/assets/{{ a.id }}"><b>{{ a.asset_code }}</b></a><div class="muted" style="font-size:12px">{{ a.name or '' }}</div></td>
-        <td>{{ a.category }}</td>
-        <td>{{ a.make or '' }} {{ a.model or '' }}</td>
-        <td class="mono">{{ a.serial_no or '' }}</td>
-        <td>{{ a.assigned_to or '' }}<div class="muted" style="font-size:12px">{{ a.department or '' }}</div></td>
-        <td>{{ a.location or '' }}</td>
+        <td><input type="checkbox" name="id" value="{{ a.id }}" class="pick" style="width:auto" aria-label="Select {{ a.asset_code }}"></td>
+        <td><a class="mono" style="white-space:nowrap" href="/assets/{{ a.id }}"><b>{{ a.asset_code }}</b></a><div class="sub2" style="max-width:140px">{{ a.name or '' }}</div></td>
+        <td class="mm">{{ a.make or '' }} {{ a.model or '' }}<div class="sub2">{{ a.category }}</div></td>
+        <td class="mono"><div style="max-width:130px;word-break:break-all">{{ a.serial_no or '' }}</div></td>
+        <td>{{ a.assigned_to or '' }}
+          <div class="sub2">{{ a.department ~ ' · ' if a.department }}{{ a.location or '' }}</div></td>
         <td>{{ status_chip(a.status) }}</td>
-        <td><a class="btn sm ghost" target="_blank" href="/assets/{{ a.id }}/label.pdf">Label</a></td>
+        <td class="nowrap">
+          {% if user.role in ('admin','it') %}<input type="date" class="pdate" data-id="{{ a.id }}" value="{{ a.purchase_date or '' }}"
+              aria-label="Purchase date of {{ a.asset_code }}" title="Pick a date; it saves straight away">
+          {% else %}{{ dmy(a.purchase_date) if a.purchase_date else '' }}{% endif %}</td>
+        <td>
+          {% if a.inv_id %}<a class="inv-link" target="_blank" href="/assets/{{ a.id }}/invoice/{{ a.inv_id }}">📄 View{% if a.inv_count > 1 %} ({{ a.inv_count }}){% endif %}</a>{% endif %}
+          {% if user.role in ('admin','it') %}<button type="button" class="btn sm ghost up-inv" data-id="{{ a.id }}" data-code="{{ a.asset_code }}">{{ 'Add' if a.inv_id else 'Upload' }}</button>{% endif %}
+          {% if a.invoice_no %}<div class="sub2">{{ a.invoice_no }}</div>{% endif %}</td>
+        <td><div class="row-actions">
+          <a class="btn sm ghost" target="_blank" href="/assets/{{ a.id }}/label.pdf">Label</a>
+          {% if user.role == 'admin' %}<button type="button" class="btn sm danger-ghost del-one" data-id="{{ a.id }}" data-code="{{ a.asset_code }}" title="Delete {{ a.asset_code }}" aria-label="Delete {{ a.asset_code }}">🗑</button>{% endif %}
+        </div></td>
       </tr>
     {% else %}
       <tr><td colspan="9" class="muted" style="padding:24px;text-align:center">No assets found.</td></tr>
     {% endfor %}
     </tbody>
-  </table></div>
+  </table>
+  </div>
+  <div class="pager">
+    <div class="pg" aria-label="Pages">
+      {% if pages > 1 %}
+        {% for n in range(1, pages + 1) %}
+          {% if n == page %}<span class="on" aria-current="page">{{ n }}</span>
+          {% elif n == 1 or n == pages or (n - page)|abs <= 2 %}<a href="?{% for k, v in keep %}{{ k|urlencode }}={{ v|urlencode }}&amp;{% endfor %}page={{ n }}">{{ n }}</a>
+          {% elif (n - page)|abs == 3 %}<span class="gap">…</span>{% endif %}
+        {% endfor %}
+      {% endif %}
+    </div>
+    <label>Rows per page
+      <select id="per" aria-label="Rows per page">
+        {% for n, t in [(25,'25'),(50,'50'),(100,'100'),(0,'All')] %}<option value="{{ n }}" {{ 'selected' if per == n }}>{{ t }}</option>{% endfor %}
+      </select></label>
+  </div>
 </div>
 <div class="sticky-actions" id="bulkbar">
   <b id="cnt">0</b> selected ·
@@ -52,14 +121,69 @@
   <select name="style" style="width:auto" aria-label="Label style"><option value="logo">Logo in QR</option>
     <option value="classic">Logo on top</option></select>
   <button class="btn">Print labels</button>
+  {% if user.role == 'admin' %}<button class="btn danger" id="delMany" formaction="/assets/delete-many" formmethod="post" formtarget="_self">Delete selected</button>{% endif %}
 </div>
 </form>
+
+{# forms kept outside the bulk form, because HTML forms cannot be nested #}
+<form id="invForm" method="post" enctype="multipart/form-data" hidden>
+  <input type="hidden" name="next" value="{{ here }}">
+  <input type="file" name="file" id="invFile" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic">
+</form>
+<form id="delForm" method="post" hidden></form>
+
+<div class="jump" aria-label="Scroll the list">
+  <button type="button" id="toTop" title="Go to the top of the list">↑ Top</button>
+  <button type="button" id="toEnd" title="Go to the end of the list">↓ End</button>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
 const picks = [...document.querySelectorAll('.pick')], bar = document.getElementById('bulkbar'), cnt = document.getElementById('cnt');
-function upd(){ const n = picks.filter(p => p.checked).length; cnt.textContent = n; bar.classList.toggle('show', n > 0); }
+function upd(){ const n = picks.filter(p => p.checked).length; cnt.textContent = n; bar.classList.toggle('show', n > 0);
+  const j = document.querySelector('.jump'); if (j) j.classList.toggle('up', n > 0); }
 picks.forEach(p => p.addEventListener('change', upd));
 document.getElementById('all').addEventListener('change', e => { picks.forEach(p => p.checked = e.target.checked); upd(); });
+
+const here = location.pathname + location.search;
+// Upload an invoice straight from the list
+const invForm = document.getElementById('invForm'), invFile = document.getElementById('invFile');
+document.querySelectorAll('.up-inv').forEach(b => b.addEventListener('click', () => {
+  invForm.action = '/assets/' + b.dataset.id + '/invoice'; invForm.dataset.code = b.dataset.code; invFile.value = ''; invFile.click();
+}));
+invFile.addEventListener('change', () => {
+  const f = invFile.files[0]; if (!f) return;
+  if (f.size > 4 * 1024 * 1024) { alert(f.name + ' is larger than 4 MB. Please compress it or scan at a lower resolution.'); return; }
+  document.body.style.cursor = 'progress'; invForm.submit();
+});
+// Delete (admin only)
+const delForm = document.getElementById('delForm');
+document.querySelectorAll('.del-one').forEach(b => b.addEventListener('click', () => {
+  if (!confirm('Delete ' + b.dataset.code + ' permanently?\n\nIf the asset was only handed back or scrapped, you can instead edit it and set the status to Retired or Lost / Disposed.')) return;
+  delForm.action = '/assets/' + b.dataset.id + '/delete?next=' + encodeURIComponent(here); delForm.submit();
+}));
+const delMany = document.getElementById('delMany');
+if (delMany) delMany.addEventListener('click', e => {
+  const n = picks.filter(p => p.checked).length;
+  if (!confirm('Delete ' + n + ' selected asset' + (n === 1 ? '' : 's') + ' permanently? This cannot be undone.')) e.preventDefault();
+});
+// Purchase date: saves as soon as a date is picked, without leaving the list
+document.querySelectorAll('.pdate').forEach(inp => inp.addEventListener('change', async () => {
+  if (!inp.value) return;
+  const fd = new FormData(); fd.append('purchase_date', inp.value); fd.append('next', here);
+  try {
+    const r = await fetch('/assets/' + inp.dataset.id + '/invoice', {method: 'POST', body: fd, redirect: 'manual'});
+    inp.classList.add('saved'); inp.title = 'Saved'; setTimeout(() => inp.classList.remove('saved'), 2500);
+  } catch (e) { alert('Could not save the date. Please try again.'); }
+}));
+// Rows per page
+document.getElementById('per').addEventListener('change', e => {
+  const u = new URL(location.href); u.searchParams.set('per', e.target.value); u.searchParams.delete('page'); location.href = u;
+});
+// Jump buttons: move the list box on wide screens, the page on phones
+const box = document.getElementById('scrollbox');
+const scroller = () => (box.scrollHeight > box.clientHeight + 4 ? box : document.scrollingElement);
+document.getElementById('toTop').onclick = () => scroller().scrollTo({top: 0, behavior: 'smooth'});
+document.getElementById('toEnd').onclick = () => { const s = scroller(); s.scrollTo({top: s.scrollHeight, behavior: 'smooth'}); };
 </script>
 {% endblock %}

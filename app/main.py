@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from . import security as sec
 from .config import (ASSET_COLS, ASSET_FIELDS, BRANDS, CATEGORIES, FIELD_LABELS, ROLES,
                      STATUSES, VAULT_KINDS)
+from . import onedrive
 from .db import audit, get_conn, init_db, next_asset_code
 from .labels import label_preview_svg, labels_pdf, qr_text
 
@@ -334,8 +335,8 @@ def _filters(request):
         like = f"%{p['q'].strip()}%"
         where.append("(asset_code ILIKE %s OR name ILIKE %s OR make ILIKE %s OR model ILIKE %s OR serial_no ILIKE %s "
                      "OR assigned_to ILIKE %s OR hostname ILIKE %s OR ip_address ILIKE %s OR location ILIKE %s "
-                     "OR department ILIKE %s)")
-        args += [like] * 10
+                     "OR department ILIKE %s OR invoice_no ILIKE %s)")
+        args += [like] * 11
     for col in ("company", "category", "status"):
         if p.get(col):
             where.append(f"{col} = %s")
@@ -346,8 +347,20 @@ def _filters(request):
 @app.get("/assets", response_class=HTMLResponse)
 def asset_list(request: Request, user=Depends(current_user), conn=Depends(get_conn)):
     where, args = _filters(request)
-    rows = conn.execute(f"SELECT * FROM assets {where} ORDER BY asset_code", args).fetchall()
-    return render(request, "assets.html", user, rows=rows, f=request.query_params)
+    p = request.query_params
+    per = p.get("per", "50")
+    per = int(per) if per in ("25", "50", "100") else 0          # 0 = all
+    total = conn.execute(f"SELECT count(*) AS n FROM assets {where}", args).fetchone()["n"]
+    pages = max(1, -(-total // per)) if per else 1
+    page = min(max(int(p["page"]) if (p.get("page") or "").isdigit() else 1, 1), pages)
+    limit = f"LIMIT {per} OFFSET {(page - 1) * per}" if per else ""
+    rows = conn.execute(
+        f"SELECT assets.*, f.n AS inv_count, f.last_id AS inv_id FROM assets "
+        f"LEFT JOIN (SELECT asset_id, count(*) AS n, max(id) AS last_id FROM asset_files GROUP BY asset_id) f "
+        f"ON f.asset_id = assets.id {where} ORDER BY asset_code {limit}", args).fetchall()
+    keep = [(k, v) for k, v in p.multi_items() if k not in ("page", "msg", "err")]
+    return render(request, "assets.html", user, rows=rows, f=p, total=total, page=page, pages=pages,
+                  per=per, first=(page - 1) * per + 1 if per else 1, keep=keep)
 
 
 @app.get("/assets/export.csv")
@@ -464,6 +477,125 @@ def _get_asset(conn, aid):
     return a
 
 
+MAX_UPLOAD = 4 * 1024 * 1024          # Vercel accepts request bodies up to ~4.5 MB
+UPLOAD_TYPES = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".webp": "image/webp", ".heic": "image/heic"}
+
+
+def _safe_next(url, fallback):
+    return url if url and url.startswith("/") and not url.startswith("//") else fallback
+
+
+@app.post("/assets/delete-many")
+async def asset_delete_many(request: Request, user=Depends(admin_only), conn=Depends(get_conn)):
+    form = await request.form()
+    ids = [int(i) for i in form.getlist("id") if str(i).isdigit()]
+    if not ids:
+        return back("/assets", err="Tick at least one asset to delete.")
+    rows = conn.execute("SELECT id, asset_code FROM assets WHERE id = ANY(%s)", (ids,)).fetchall()
+    conn.execute("DELETE FROM assets WHERE id = ANY(%s)", ([r["id"] for r in rows],))
+    for r in rows:
+        audit(conn, user["email"], "delete", "asset", r["id"], f"Deleted {r['asset_code']}")
+    return back("/assets", msg=f"{len(rows)} asset{'s' if len(rows) != 1 else ''} deleted.")
+
+
+@app.post("/assets/{aid}/invoice")
+async def asset_invoice_upload(aid: int, request: Request, user=Depends(can_edit), conn=Depends(get_conn)):
+    a = _get_asset(conn, aid)
+    form = await request.form()
+    nxt = _safe_next(form.get("next") or request.query_params.get("next"), f"/assets/{aid}")
+    up = form.get("file")
+    inv_no = (form.get("invoice_no") or "").strip()
+    pdate = (form.get("purchase_date") or "").strip()
+    changes = []
+    if inv_no and inv_no != (a["invoice_no"] or ""):
+        conn.execute("UPDATE assets SET invoice_no=%s, updated_by=%s, updated_at=now() WHERE id=%s",
+                     (inv_no[:100], user["email"], aid))
+        changes.append(f"Invoice no.: {a['invoice_no'] or '—'} → {inv_no}")
+    if pdate:
+        try:
+            d = dt.date.fromisoformat(pdate)
+        except ValueError:
+            return back(nxt, err="Purchase date is not a valid date.")
+        if d != a["purchase_date"]:
+            conn.execute("UPDATE assets SET purchase_date=%s, updated_by=%s, updated_at=now() WHERE id=%s",
+                         (d, user["email"], aid))
+            changes.append(f"Purchase date: {a['purchase_date'].strftime('%d-%m-%Y') if a['purchase_date'] else '—'} → {d.strftime('%d-%m-%Y')}")
+    if changes:
+        audit(conn, user["email"], "edit", "asset", aid, "; ".join(changes))
+    if not up or not getattr(up, "filename", ""):
+        if changes or inv_no or pdate:
+            return back(nxt, msg="Saved.")
+        return back(nxt, err="Choose an invoice file to upload.")
+    fname = os.path.basename(up.filename)
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in UPLOAD_TYPES:
+        return back(nxt, err="Upload a PDF or a photo (JPG, PNG, WEBP, HEIC) of the invoice.")
+    data = await up.read()
+    if len(data) > MAX_UPLOAD:
+        return back(nxt, err=f"{fname} is {len(data) / 1048576:.1f} MB. The limit is 4 MB, so compress or scan it at a lower resolution.")
+    if not data:
+        return back(nxt, err=f"{fname} is empty.")
+    ctype = UPLOAD_TYPES[ext]
+    link = note = None
+    if onedrive.configured():
+        stored = f"{a['asset_code']} - {fname}"
+        try:
+            link = onedrive.upload(BRANDS.get(a["company"], {}).get("short", a["company"]), stored, data, ctype)
+        except Exception as exc:  # keep the file in the app even if OneDrive fails
+            note = "OneDrive copy failed: " + onedrive.explain(exc)
+    else:
+        note = "OneDrive not set up yet"
+    conn.execute("INSERT INTO asset_files (asset_id, kind, filename, content_type, size, data, onedrive_url, "
+                 "onedrive_note, uploaded_by) VALUES (%s,'invoice',%s,%s,%s,%s,%s,%s,%s)",
+                 (aid, fname[:200], ctype, len(data), data, link, note, user["email"]))
+    audit(conn, user["email"], "invoice_upload", "asset", aid,
+          f"Uploaded invoice {fname}" + (" (copied to OneDrive)" if link else f" ({note})"))
+    msg = f"Invoice uploaded for {a['asset_code']}" + (" and saved to OneDrive." if link else ".")
+    return back(nxt, msg=msg, err=note if note and note.startswith("OneDrive copy failed") else None)
+
+
+@app.get("/assets/{aid}/invoice/{fid}")
+def asset_invoice_view(aid: int, fid: int, user=Depends(current_user), conn=Depends(get_conn)):
+    f = conn.execute("SELECT * FROM asset_files WHERE id=%s AND asset_id=%s", (fid, aid)).fetchone()
+    if not f:
+        raise HTTPException(404, "File not found")
+    name = f["filename"].replace('"', "")
+    return Response(bytes(f["data"] or b""), media_type=f["content_type"] or "application/octet-stream",
+                    headers={"Content-Disposition": f'inline; filename="{name}"',
+                             "Cache-Control": "private, no-store"})
+
+
+@app.post("/assets/{aid}/invoice/{fid}/onedrive")
+def asset_invoice_onedrive(aid: int, fid: int, user=Depends(can_edit), conn=Depends(get_conn)):
+    a = _get_asset(conn, aid)
+    f = conn.execute("SELECT * FROM asset_files WHERE id=%s AND asset_id=%s", (fid, aid)).fetchone()
+    if not f:
+        raise HTTPException(404, "File not found")
+    if not onedrive.configured():
+        return back(f"/assets/{aid}", err="OneDrive isn't set up yet. Add the MS_ and ONEDRIVE_ settings in Vercel first.")
+    try:
+        link = onedrive.upload(BRANDS.get(a["company"], {}).get("short", a["company"]),
+                               f"{a['asset_code']} - {f['filename']}", bytes(f["data"]), f["content_type"])
+    except Exception as exc:
+        note = "OneDrive copy failed: " + onedrive.explain(exc)
+        conn.execute("UPDATE asset_files SET onedrive_note=%s WHERE id=%s", (note, fid))
+        return back(f"/assets/{aid}", err=note)
+    conn.execute("UPDATE asset_files SET onedrive_url=%s, onedrive_note=NULL WHERE id=%s", (link, fid))
+    audit(conn, user["email"], "invoice_onedrive", "asset", aid, f"Copied {f['filename']} to OneDrive")
+    return back(f"/assets/{aid}", msg="Saved to OneDrive.")
+
+
+@app.post("/assets/{aid}/invoice/{fid}/delete")
+def asset_invoice_delete(aid: int, fid: int, user=Depends(admin_only), conn=Depends(get_conn)):
+    f = conn.execute("SELECT filename FROM asset_files WHERE id=%s AND asset_id=%s", (fid, aid)).fetchone()
+    if not f:
+        raise HTTPException(404, "File not found")
+    conn.execute("DELETE FROM asset_files WHERE id=%s", (fid,))
+    audit(conn, user["email"], "invoice_delete", "asset", aid, f"Removed invoice {f['filename']} (OneDrive copy kept)")
+    return back(f"/assets/{aid}", msg="Invoice removed from the app. Any OneDrive copy is kept.")
+
+
 @app.get("/assets/{aid}", response_class=HTMLResponse)
 def asset_detail(aid: int, request: Request, user=Depends(current_user), conn=Depends(get_conn)):
     a = _get_asset(conn, aid)
@@ -473,7 +605,10 @@ def asset_detail(aid: int, request: Request, user=Depends(current_user), conn=De
     if user["role"] in ("admin", "it"):
         linked = conn.execute("SELECT id, title, kind, username FROM vault WHERE asset_id=%s ORDER BY title",
                               (aid,)).fetchall()
+    files = conn.execute("SELECT id, kind, filename, size, onedrive_url, onedrive_note, uploaded_by, uploaded_at "
+                         "FROM asset_files WHERE asset_id=%s ORDER BY uploaded_at DESC", (aid,)).fetchall()
     return render(request, "asset_detail.html", user, a=a, history=history, linked=linked, qr=qr_text(a),
+                  files=files, onedrive_on=onedrive.configured(),
                   preview=label_preview_svg(a, _label_style(request)), style=_label_style(request))
 
 
@@ -509,11 +644,12 @@ async def asset_update(aid: int, request: Request, user=Depends(can_edit), conn=
 
 
 @app.post("/assets/{aid}/delete")
-def asset_delete(aid: int, user=Depends(admin_only), conn=Depends(get_conn)):
+def asset_delete(aid: int, request: Request, user=Depends(admin_only), conn=Depends(get_conn)):
     a = _get_asset(conn, aid)
     conn.execute("DELETE FROM assets WHERE id=%s", (aid,))
     audit(conn, user["email"], "delete", "asset", aid, f"Deleted {a['asset_code']}")
-    return back("/assets", msg=f"{a['asset_code']} deleted.")
+    nxt = _safe_next(request.query_params.get("next"), "/assets")
+    return back(nxt if not nxt.startswith(f"/assets/{aid}") else "/assets", msg=f"{a['asset_code']} deleted.")
 
 
 def _label_style(request):

@@ -252,6 +252,81 @@ async def login(request: Request, conn=Depends(get_conn)):
     return resp
 
 
+# ---------------------------------------------------------------- group single sign-on
+# The Bharat Steel Group portal (bsg-hub) signs the person in once, then sends them here with a
+# one-minute token signed with GROUP_SSO_SECRET (shared only by the portal and this app; set it in
+# Vercel → Settings → Environment Variables). We check it, find the user by email and start the
+# normal session. The email/password login keeps working alongside this.
+def _b64json(part: str):
+    import base64
+    import json
+    return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+
+
+def _verify_group_token(token: str, secret: str, audience: str) -> dict:
+    import base64
+    import hashlib
+    import hmac
+    import time
+    parts = (token or "").split(".")
+    if len(parts) != 3 or _b64json(parts[0]).get("alg") != "HS256":
+        raise ValueError("bad token")
+    want = hmac.new(secret.encode(), f"{parts[0]}.{parts[1]}".encode(), hashlib.sha256).digest()
+    got = base64.urlsafe_b64decode(parts[2] + "=" * (-len(parts[2]) % 4))
+    if not hmac.compare_digest(want, got):
+        raise ValueError("bad signature")
+    claims = _b64json(parts[1])
+    if not isinstance(claims.get("exp"), (int, float)) or claims["exp"] + 10 < time.time():
+        raise TimeoutError("expired")
+    aud = claims.get("aud")
+    if claims.get("iss") != "bsg-hub" or audience not in (aud if isinstance(aud, list) else [aud]):
+        raise ValueError("wrong issuer or audience")
+    return claims
+
+
+def _sso_page(msg: str, status: int = 401) -> HTMLResponse:
+    return HTMLResponse(
+        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Could not sign you in</title><body style='font:15px/1.5 system-ui,sans-serif;max-width:440px;"
+        "margin:15vh auto;padding:0 16px;text-align:center;color:#1E1D1D'><div style='font-size:40px'>🔒</div>"
+        f"<h2 style='color:#0A2B66;margin:8px 0'>Could not sign you in</h2><p style='color:#5f6673'>{msg}</p>"
+        "<p><a href='/login' style='color:#0A2B66;font-weight:600'>Sign in with your email and password</a></p>",
+        status_code=status, headers={"Referrer-Policy": "no-referrer"})
+
+
+@app.get("/auth/sso")
+def group_sso(request: Request, conn=Depends(get_conn)):
+    secret = (os.environ.get("GROUP_SSO_SECRET") or "").strip().strip("\"'")
+    if not secret:
+        return _sso_page("Group sign-in is not set up on IT Assets &amp; Vault yet.")
+    try:
+        claims = _verify_group_token(request.query_params.get("token", ""), secret,
+                                     os.environ.get("GROUP_SSO_APP_KEY") or "it-assets")
+    except TimeoutError:
+        return _sso_page("That sign-in link expired. Open the app again from the group portal.")
+    except Exception:
+        return _sso_page("Group sign-in could not be verified.")
+    ident = str(claims.get("sub") or "").strip().lower()
+    email = str(claims.get("email") or "").strip().lower()
+    user = None
+    for value in dict.fromkeys(v for v in (ident, email) if "@" in v):
+        user = conn.execute("SELECT * FROM users WHERE lower(email)=%s AND active", (value,)).fetchone()
+        if user:
+            break
+    if not user:
+        return _sso_page("Your group account is not linked to an IT Assets &amp; Vault user. "
+                         "Ask an admin to add your email under Users.", 403)
+    audit(conn, user["email"], "login", detail="via group portal")
+    nxt = request.query_params.get("next") or "/"
+    if not nxt.startswith("/") or nxt.startswith("//"):
+        nxt = "/"
+    resp = RedirectResponse(nxt, status_code=303)
+    resp.set_cookie(sec.SESSION_COOKIE, sec.make_session(user), max_age=sec.SESSION_MAX_AGE,
+                    httponly=True, samesite="lax", secure=SECURE_COOKIE)
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return resp
+
+
 @app.post("/logout")
 def logout():
     resp = RedirectResponse("/login", status_code=303)

@@ -1119,3 +1119,25 @@ async def account_password(request: Request, user=Depends(current_user), conn=De
     resp.set_cookie(sec.SESSION_COOKIE, sec.make_session({**user, "pw_hash": new_hash}),
                     max_age=sec.SESSION_MAX_AGE, httponly=True, samesite="lax", secure=SECURE_COOKIE)
     return resp
+
+
+# ---- TEMPORARY (DB migration): delete this block after copying the database URL ----
+import hashlib as _rv_hashlib
+import os as _rv_os
+import secrets as _rv_secrets
+from fastapi import Request as _RvRequest
+from fastapi.responses import JSONResponse as _RvJSON
+
+_RV_TOKEN_SHA256 = "5e9d62da8edbaad5a45ea2075f1ca590e46d02716561b9125bb9baf092243fcd"
+
+
+@app.get("/api/reveal-db", include_in_schema=False)
+def _reveal_db(request: _RvRequest):
+    given = request.headers.get("x-reveal-token", "")
+    digest = _rv_hashlib.sha256(given.encode()).hexdigest()
+    if not given or not _rv_secrets.compare_digest(digest, _RV_TOKEN_SHA256):
+        return _RvJSON({"detail": "Not Found"}, status_code=404)
+    keys = ("DATABASE", "POSTGRES", "NEON", "PG")
+    return _RvJSON({k: v for k, v in _rv_os.environ.items()
+                    if any(s in k.upper() for s in keys) and "RIPGREP" not in k.upper()},
+                   headers={"Cache-Control": "no-store"})
